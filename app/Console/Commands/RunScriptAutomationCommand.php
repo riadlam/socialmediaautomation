@@ -33,26 +33,32 @@ class RunScriptAutomationCommand extends Command
             ->get()
             ->each(function (Script $script): void {
                 try {
+                    $inputText = $this->trimScriptToTargetDuration($script->script);
+                    $payload = [
+                        'video_inputs' => [[
+                            'character' => [
+                                'type' => 'avatar',
+                                'avatar_id' => (string) config('services.heygen.avatar_id'),
+                            ],
+                            'voice' => [
+                                'type' => 'text',
+                                'input_text' => $inputText,
+                            ],
+                        ]],
+                        'title' => 'script-'.$script->id,
+                        'callback_id' => (string) $script->id,
+                    ];
+
+                    if (filled(config('services.heygen.voice_id'))) {
+                        $payload['video_inputs'][0]['voice']['voice_id'] = (string) config('services.heygen.voice_id');
+                    }
+
                     $response = Http::timeout(60)
                         ->withHeaders([
                             'x-api-key' => (string) config('services.heygen.api_key'),
                             'Content-Type' => 'application/json',
                         ])
-                        ->post('https://api.heygen.com/v2/video/generate', [
-                            'video_inputs' => [[
-                                'character' => [
-                                    'type' => 'avatar',
-                                    'avatar_id' => (string) config('services.heygen.avatar_id'),
-                                ],
-                                'voice' => [
-                                    'type' => 'text',
-                                    'voice_id' => (string) config('services.heygen.voice_id'),
-                                    'input_text' => $script->script,
-                                ],
-                            ]],
-                            'title' => 'script-'.$script->id,
-                            'callback_id' => (string) $script->id,
-                        ]);
+                        ->post('https://api.heygen.com/v2/video/generate', $payload);
 
                     if (! $response->successful()) {
                         $this->markError($script, 'HeyGen generate HTTP '.$response->status().': '.$response->body());
@@ -70,7 +76,9 @@ class RunScriptAutomationCommand extends Command
                         'status' => 'generating',
                         'start_date' => $script->start_date ?? now(),
                         'finish_date' => null,
+                        'heygen_session_id' => null,
                         'video_id' => (string) $videoId,
+                        'video_url' => null,
                         'poll_attempts' => 0,
                         'error' => null,
                     ]);
@@ -102,6 +110,8 @@ class RunScriptAutomationCommand extends Command
                 }
 
                 try {
+                    $script->increment('poll_attempts');
+
                     $response = Http::timeout(60)
                         ->withHeaders([
                             'x-api-key' => (string) config('services.heygen.api_key'),
@@ -109,8 +119,6 @@ class RunScriptAutomationCommand extends Command
                         ->get('https://api.heygen.com/v1/video_status.get', [
                             'video_id' => $script->video_id,
                         ]);
-
-                    $script->increment('poll_attempts');
 
                     if (! $response->successful()) {
                         $this->markError($script, 'HeyGen status HTTP '.$response->status().': '.$response->body());
@@ -164,6 +172,13 @@ class RunScriptAutomationCommand extends Command
                 }
 
                 try {
+                    $platforms = $this->resolveZrnoPlatforms();
+
+                    if ($platforms === []) {
+                        $this->markError($script, 'Zrno platforms are not configured. Set ZRNO_PLATFORMS_JSON or ZRNO_PLATFORM + ZRNO_ACCOUNT_ID.');
+                        return;
+                    }
+
                     $response = Http::timeout(60)
                         ->withToken((string) config('services.zrno.api_key'))
                         ->post((string) config('services.zrno.base_url').'/v1/posts', [
@@ -172,10 +187,7 @@ class RunScriptAutomationCommand extends Command
                                 'type' => 'video',
                                 'url' => $script->video_url,
                             ]],
-                            'platforms' => [[
-                                'platform' => (string) config('services.zrno.platform'),
-                                'accountId' => (string) config('services.zrno.account_id'),
-                            ]],
+                            'platforms' => $platforms,
                             'publishNow' => true,
                         ]);
 
@@ -206,6 +218,69 @@ class RunScriptAutomationCommand extends Command
         ]);
 
         $this->error("Script #{$script->id}: {$message}");
+    }
+
+    private function trimScriptToTargetDuration(string $script): string
+    {
+        $clean = trim(preg_replace('/\s+/', ' ', $script) ?? $script);
+        $targetSeconds = (int) config('services.heygen.target_seconds', 20);
+        $wpm = (int) config('services.heygen.words_per_minute', 150);
+        $maxWords = max(1, (int) floor(($targetSeconds / 60) * $wpm));
+        $words = preg_split('/\s+/', $clean, -1, PREG_SPLIT_NO_EMPTY);
+
+        if (! is_array($words) || count($words) <= $maxWords) {
+            return $clean;
+        }
+
+        return implode(' ', array_slice($words, 0, $maxWords));
+    }
+
+    /**
+     * @return array<int, array{platform:string,accountId:string}>
+     */
+    private function resolveZrnoPlatforms(): array
+    {
+        $platformsJson = (string) config('services.zrno.platforms_json', '');
+
+        if ($platformsJson !== '') {
+            $decoded = json_decode($platformsJson, true);
+
+            if (is_array($decoded)) {
+                $platforms = [];
+
+                foreach ($decoded as $item) {
+                    if (! is_array($item)) {
+                        continue;
+                    }
+
+                    $platform = isset($item['platform']) ? trim((string) $item['platform']) : '';
+                    $accountId = isset($item['accountId']) ? trim((string) $item['accountId']) : '';
+
+                    if ($platform !== '' && $accountId !== '') {
+                        $platforms[] = [
+                            'platform' => $platform,
+                            'accountId' => $accountId,
+                        ];
+                    }
+                }
+
+                if ($platforms !== []) {
+                    return $platforms;
+                }
+            }
+        }
+
+        $platform = trim((string) config('services.zrno.platform'));
+        $accountId = trim((string) config('services.zrno.account_id'));
+
+        if ($platform === '' || $accountId === '') {
+            return [];
+        }
+
+        return [[
+            'platform' => $platform,
+            'accountId' => $accountId,
+        ]];
     }
 }
 

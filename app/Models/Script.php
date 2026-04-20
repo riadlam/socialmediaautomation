@@ -11,6 +11,7 @@ class Script extends Model
         'status',
         'start_date',
         'finish_date',
+        'heygen_session_id',
         'video_id',
         'video_url',
         'poll_attempts',

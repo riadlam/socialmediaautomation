@@ -39,12 +39,16 @@ return [
         'api_key' => env('HEYGEN_API_KEY'),
         'avatar_id' => env('HEYGEN_AVATAR_ID'),
         'voice_id' => env('HEYGEN_VOICE_ID'),
+        'orientation' => env('HEYGEN_ORIENTATION'),
         'max_poll_attempts' => env('HEYGEN_MAX_POLL_ATTEMPTS', 60),
+        'target_seconds' => env('HEYGEN_TARGET_SECONDS', 20),
+        'words_per_minute' => env('HEYGEN_WORDS_PER_MINUTE', 150),
     ],
 
     'zrno' => [
         'api_key' => env('ZRNO_API_KEY'),
         'base_url' => env('ZRNO_BASE_URL', 'https://zernio.com/api'),
+        'platforms_json' => env('ZRNO_PLATFORMS_JSON'),
         'platform' => env('ZRNO_PLATFORM'),
         'account_id' => env('ZRNO_ACCOUNT_ID'),
     ],
