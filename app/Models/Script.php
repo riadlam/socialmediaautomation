@@ -9,6 +9,8 @@ class Script extends Model
     protected $fillable = [
         'script',
         'status',
+        'start_date',
+        'finish_date',
         'video_id',
         'video_url',
         'poll_attempts',
@@ -18,6 +20,8 @@ class Script extends Model
 
     protected $casts = [
         'publish_response' => 'array',
+        'start_date' => 'datetime',
+        'finish_date' => 'datetime',
     ];
 }
 

@@ -68,6 +68,8 @@ class RunScriptAutomationCommand extends Command
 
                     $script->update([
                         'status' => 'generating',
+                        'start_date' => $script->start_date ?? now(),
+                        'finish_date' => null,
                         'video_id' => (string) $videoId,
                         'poll_attempts' => 0,
                         'error' => null,
@@ -184,6 +186,7 @@ class RunScriptAutomationCommand extends Command
 
                     $script->update([
                         'status' => 'done',
+                        'finish_date' => now(),
                         'publish_response' => $response->json(),
                         'error' => null,
                     ]);
@@ -197,6 +200,8 @@ class RunScriptAutomationCommand extends Command
     {
         $script->update([
             'status' => 'error',
+            'start_date' => $script->start_date ?? now(),
+            'finish_date' => now(),
             'error' => mb_substr($message, 0, 65535),
         ]);
 
