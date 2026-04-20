@@ -8,3 +8,4 @@ Route::get('/', function () {
 });
 
 Route::get('/scripts-monitor', [ScriptMonitorController::class, 'index'])->name('scripts.monitor');
+Route::post('/scripts-monitor', [ScriptMonitorController::class, 'store'])->name('scripts.monitor.store');

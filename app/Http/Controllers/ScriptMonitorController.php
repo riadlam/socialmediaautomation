@@ -3,11 +3,36 @@
 namespace App\Http\Controllers;
 
 use App\Models\Script;
+use Illuminate\Http\RedirectResponse;
 use Illuminate\Contracts\View\View;
 use Illuminate\Http\Request;
 
 class ScriptMonitorController extends Controller
 {
+    public function store(Request $request): RedirectResponse
+    {
+        $validated = $request->validate([
+            'script' => ['required', 'string', 'max:65535'],
+        ]);
+
+        Script::query()->create([
+            'script' => trim($validated['script']),
+            'status' => 'pending',
+            'start_date' => null,
+            'finish_date' => null,
+            'heygen_session_id' => null,
+            'video_id' => null,
+            'video_url' => null,
+            'poll_attempts' => 0,
+            'error' => null,
+            'publish_response' => null,
+        ]);
+
+        return redirect()
+            ->route('scripts.monitor')
+            ->with('success', 'Script queued successfully.');
+    }
+
     public function index(Request $request): View
     {
         $status = trim((string) $request->query('status', ''));
