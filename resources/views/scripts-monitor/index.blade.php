@@ -425,7 +425,21 @@
                         <td>{{ optional($script->last_polled_at)->toDateTimeString() ?: '-' }}</td>
                         <td>{{ optional($script->start_date)->toDateTimeString() ?: '-' }}</td>
                         <td>{{ optional($script->finish_date)->toDateTimeString() ?: '-' }}</td>
-                        <td class="error-cell">{{ $script->error ?: '-' }}</td>
+                        <td class="error-cell">
+                            @php
+                                $fullError = (string) ($script->error ?: '-');
+                                $shortError = \Illuminate\Support\Str::limit($fullError, 60, '...');
+                                $canExpandError = \Illuminate\Support\Str::length($fullError) > 60;
+                            @endphp
+                            <span class="text-preview"
+                                  data-preview
+                                  data-short="{{ $shortError }}"
+                                  data-full="{{ $fullError }}">{{ $shortError }}</span>
+                            @if($canExpandError)
+                                <br>
+                                <button type="button" class="btn btn-ghost expand-btn" data-expand-toggle>Expand</button>
+                            @endif
+                        </td>
                     </tr>
                 @empty
                     <tr>
