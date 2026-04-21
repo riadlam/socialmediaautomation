@@ -13,7 +13,7 @@ class RunScriptAutomationCommand extends Command
 {
     protected $signature = 'automation:run-scripts {--limit=5 : Maximum items per status per run}';
 
-    protected $description = 'Process scripts table: HeyGen Generate Video (POST /v2/videos), poll status (GET /v1/video_status.get), then publish to Zrno.';
+    protected $description = 'Process scripts table: HeyGen Generate Video (POST /v2/videos), poll status (GET /v2/videos/{id}), then publish to Zrno.';
 
     public function handle(): int
     {
@@ -122,14 +122,13 @@ class RunScriptAutomationCommand extends Command
                         'last_polled_at' => now(),
                     ]);
 
+                    $pollUrl = 'https://api.heygen.com/v2/videos/'.rawurlencode((string) $script->video_id);
                     $response = Http::timeout(60)
                         ->withHeaders([
                             'x-api-key' => (string) config('services.heygen.api_key'),
                             'Accept' => 'application/json',
                         ])
-                        ->get('https://api.heygen.com/v1/video_status.get', [
-                            'video_id' => (string) $script->video_id,
-                        ]);
+                        ->get($pollUrl);
 
                     if (! $response->successful()) {
                         $this->markError($script, 'HeyGen video status HTTP '.$response->status().': '.$response->body());
@@ -137,8 +136,8 @@ class RunScriptAutomationCommand extends Command
                     }
 
                     $pollJson = $response->json();
-                    if (is_array($pollJson) && array_key_exists('code', $pollJson) && (int) data_get($pollJson, 'code') !== 100) {
-                        $this->markError($script, 'HeyGen status API error: '.(string) (data_get($pollJson, 'message') ?: $response->body()));
+                    if (is_array($pollJson) && data_get($pollJson, 'error.code')) {
+                        $this->markError($script, 'HeyGen status API error: '.(string) (data_get($pollJson, 'error.message') ?: $response->body()));
                         return;
                     }
 
@@ -504,7 +503,7 @@ class RunScriptAutomationCommand extends Command
     }
 
     /**
-     * Parses GET /v1/video_status.get JSON ({ code, data: { status, video_url, captioned_video_url, video_url_caption, error } }) or similar shapes.
+     * Parses GET /v2/videos/{id} VideoDetail (`data`) or legacy GET /v1/video_status.get (`code` + `data`).
      *
      * @param array<string, mixed>|null $json
      *
@@ -519,6 +518,9 @@ class RunScriptAutomationCommand extends Command
         $data = data_get($json, 'data');
         $block = is_array($data) ? $data : $json;
 
+        $failureMessage = data_get($block, 'failure_message');
+        $legacyError = data_get($block, 'error') ?? data_get($block, 'message') ?? data_get($json, 'error');
+
         return [
             'status' => $this->scalarToNullableString(data_get($block, 'status')),
             'video_url' => $this->scalarToNullableString(
@@ -528,7 +530,7 @@ class RunScriptAutomationCommand extends Command
             ),
             'captioned_video_url' => $this->scalarToNullableString(data_get($block, 'captioned_video_url')),
             'video_url_caption' => $this->scalarToNullableString(data_get($block, 'video_url_caption')),
-            'error' => data_get($block, 'error') ?? data_get($block, 'message') ?? data_get($json, 'error'),
+            'error' => $failureMessage !== null && $failureMessage !== '' ? $failureMessage : $legacyError,
         ];
     }
 
