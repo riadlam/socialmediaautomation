@@ -5,6 +5,7 @@ namespace App\Console\Commands;
 use App\Models\Script;
 use App\Models\ScriptLog;
 use Illuminate\Console\Command;
+use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
 use Throwable;
 
@@ -213,37 +214,146 @@ class RunScriptAutomationCommand extends Command
                         'accountId' => $selectedPlatform['accountId'],
                     ]);
 
+                    // Zerno `content`: scripts.caption (falls back to scripts.script for legacy rows).
+                    $caption = $this->buildPublishCaption($script);
+                    $postPayload = [
+                        'content' => $caption,
+                        'mediaItems' => [[
+                            'type' => 'video',
+                            'url' => $script->video_url,
+                        ]],
+                        'platforms' => [$selectedPlatform],
+                        'publishNow' => true,
+                    ];
+                    $hashtags = $this->resolvePublishHashtags($script);
+                    if ($hashtags !== []) {
+                        $postPayload['hashtags'] = $hashtags;
+                    }
+
                     $response = Http::timeout(60)
                         ->withToken((string) config('services.zrno.api_key'))
-                        ->post((string) config('services.zrno.base_url').'/v1/posts', [
-                            'content' => $script->script,
-                            'mediaItems' => [[
-                                'type' => 'video',
-                                'url' => $script->video_url,
-                            ]],
-                            'platforms' => [$selectedPlatform],
-                            'publishNow' => true,
+                        ->post((string) config('services.zrno.base_url').'/v1/posts', $postPayload);
+
+                    if ($response->successful()) {
+                        $script->update([
+                            'status' => 'done',
+                            'finish_date' => now(),
+                            'published_platform' => $selectedPlatform['platform'],
+                            'publish_response' => $response->json(),
+                            'error' => null,
+                        ]);
+                        $this->writeLog($script, 'publish', 'info', 'Publish completed successfully.', [
+                            'platform' => $selectedPlatform['platform'],
                         ]);
 
-                    if (! $response->successful()) {
-                        $this->markError($script, 'Zrno publish HTTP '.$response->status().': '.$response->body());
                         return;
                     }
 
-                    $script->update([
-                        'status' => 'done',
-                        'finish_date' => now(),
-                        'published_platform' => $selectedPlatform['platform'],
-                        'publish_response' => $response->json(),
-                        'error' => null,
-                    ]);
-                    $this->writeLog($script, 'publish', 'info', 'Publish completed successfully.', [
-                        'platform' => $selectedPlatform['platform'],
-                    ]);
+                    if ($this->isZrnoDuplicateContentResponse($response)) {
+                        $this->markPublishSkippedDuplicate($script, $selectedPlatform, $response);
+
+                        return;
+                    }
+
+                    $this->markError($script, 'Zrno publish HTTP '.$response->status().': '.$response->body());
                 } catch (Throwable $e) {
                     $this->markError($script, 'Zrno publish exception: '.$e->getMessage());
                 }
             });
+    }
+
+    /**
+     * Text sent as Zerno `content`: `scripts.caption` when set, otherwise `scripts.script` (legacy rows).
+     * Optional unique suffix avoids duplicate-content blocks on Zerno.
+     *
+     * @see config('services.zrno.append_unique_caption_suffix')
+     */
+    private function buildPublishCaption(Script $script): string
+    {
+        $caption = trim((string) ($script->caption ?? ''));
+        $body = $caption !== '' ? $caption : trim((string) $script->script);
+
+        if (! (bool) config('services.zrno.append_unique_caption_suffix', true)) {
+            return $body;
+        }
+
+        return $body.sprintf(
+            "\n\n— Ref #%d · %s UTC",
+            $script->id,
+            now()->utc()->format('Y-m-d H:i')
+        );
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function resolvePublishHashtags(Script $script): array
+    {
+        $tags = $script->hashtags;
+        if (! is_array($tags)) {
+            return [];
+        }
+
+        $out = [];
+        foreach ($tags as $tag) {
+            $t = trim((string) $tag);
+            if ($t === '') {
+                continue;
+            }
+            if (! str_starts_with($t, '#')) {
+                $t = '#'.$t;
+            }
+            $out[$t] = true;
+        }
+
+        return array_keys($out);
+    }
+
+    private function isZrnoDuplicateContentResponse(Response $response): bool
+    {
+        if ($response->status() !== 409) {
+            return false;
+        }
+
+        $json = $response->json();
+        if (! is_array($json)) {
+            return false;
+        }
+
+        $error = data_get($json, 'error');
+        if (! is_string($error)) {
+            return false;
+        }
+
+        $lower = strtolower($error);
+
+        return str_contains($lower, 'already scheduled')
+            || str_contains($lower, 'exact content')
+            || str_contains($lower, 'already posted');
+    }
+
+    /**
+     * @param array{platform:string,accountId:string} $selectedPlatform
+     */
+    private function markPublishSkippedDuplicate(Script $script, array $selectedPlatform, Response $response): void
+    {
+        $json = $response->json();
+        $script->update([
+            'status' => 'done',
+            'finish_date' => now(),
+            'published_platform' => $selectedPlatform['platform'],
+            'publish_response' => [
+                'skipped_duplicate' => true,
+                'zrno_http_status' => $response->status(),
+                'zrno_body' => is_array($json) ? $json : ['raw' => $response->body()],
+            ],
+            'error' => null,
+        ]);
+
+        $this->writeLog($script, 'publish', 'info', 'Zrno duplicate guard: same caption already on this account. No new post created; script marked done.', [
+            'platform' => $selectedPlatform['platform'],
+            'existingPostId' => is_array($json) ? data_get($json, 'details.existingPostId') : null,
+        ]);
     }
 
     private function markError(Script $script, string $message): void

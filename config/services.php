@@ -51,6 +51,8 @@ return [
         'platforms_json' => env('ZRNO_PLATFORMS_JSON'),
         'platform' => env('ZRNO_PLATFORM'),
         'account_id' => env('ZRNO_ACCOUNT_ID'),
+        // Appends a short unique line so Zerno "exact content" duplicate checks differ per script row.
+        'append_unique_caption_suffix' => env('ZRNO_APPEND_UNIQUE_CAPTION_SUFFIX', true),
     ],
 
 ];

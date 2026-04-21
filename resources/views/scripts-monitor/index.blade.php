@@ -127,6 +127,21 @@
             resize: vertical;
         }
 
+        .field-group {
+            margin-top: 12px;
+        }
+
+        .field-group label {
+            display: block;
+            margin-bottom: 6px;
+        }
+
+        .field-hint {
+            font-size: 12px;
+            color: var(--muted);
+            margin-top: 4px;
+        }
+
         .create-form {
             display: none;
             margin-bottom: 14px;
@@ -289,8 +304,22 @@
     <div class="create-form panel @if($errors->any()) show @endif" id="create-form">
         <form method="POST" action="{{ route('scripts.monitor.store') }}">
             @csrf
-            <label for="script">Script content (required)</label>
-            <textarea id="script" name="script" required>{{ old('script') }}</textarea>
+            <label for="script">Video script (HeyGen)</label>
+            <textarea id="script" name="script" required placeholder="Text used to generate the avatar video…">{{ old('script') }}</textarea>
+            <div class="field-hint">This is sent to HeyGen as voice/input. It is not the social post caption.</div>
+
+            <div class="field-group">
+                <label for="caption">Post caption (Zerno)</label>
+                <textarea id="caption" name="caption" required placeholder="Short caption shown on TikTok / Instagram…">{{ old('caption') }}</textarea>
+                <div class="field-hint">Published as Zerno <code>content</code> (not the video script above).</div>
+            </div>
+
+            <div class="field-group">
+                <label for="hashtags">Hashtags (optional)</label>
+                <textarea id="hashtags" name="hashtags" rows="3" placeholder="#growth, #mindset (or one tag per line)">{{ old('hashtags') }}</textarea>
+                <div class="field-hint">One per line or comma-separated. Sent as Zerno <code>hashtags</code> array; <code>#</code> is added if missing.</div>
+            </div>
+
             <div class="create-actions">
                 <button type="submit" class="btn btn-primary">Queue Script</button>
                 <button type="button" class="btn btn-ghost" id="cancel-create-form">Cancel</button>
@@ -329,6 +358,8 @@
                     <th>ID</th>
                     <th>Status</th>
                     <th>Script</th>
+                    <th>Caption</th>
+                    <th>Tags</th>
                     <th>Video ID</th>
                     <th>Video URL</th>
                     <th>Published On</th>
@@ -349,6 +380,14 @@
                             </span>
                         </td>
                         <td class="script-cell">{{ $script->script }}</td>
+                        <td class="script-cell">{{ $script->caption ?: '—' }}</td>
+                        <td class="script-cell">
+                            @if(is_array($script->hashtags) && count($script->hashtags) > 0)
+                                {{ implode(' ', $script->hashtags) }}
+                            @else
+                                —
+                            @endif
+                        </td>
                         <td>{{ $script->video_id ?: '-' }}</td>
                         <td>
                             @if($script->video_url)
@@ -366,7 +405,7 @@
                     </tr>
                 @empty
                     <tr>
-                        <td colspan="11">No script rows found.</td>
+                        <td colspan="13">No script rows found.</td>
                     </tr>
                 @endforelse
                 </tbody>

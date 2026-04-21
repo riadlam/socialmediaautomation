@@ -14,10 +14,16 @@ class ScriptMonitorController extends Controller
     {
         $validated = $request->validate([
             'script' => ['required', 'string', 'max:65535'],
+            'caption' => ['required', 'string', 'max:65535'],
+            'hashtags' => ['nullable', 'string', 'max:2000'],
         ]);
+
+        $hashtags = $this->parseHashtagInput($validated['hashtags'] ?? null);
 
         Script::query()->create([
             'script' => trim($validated['script']),
+            'caption' => trim($validated['caption']),
+            'hashtags' => $hashtags === [] ? null : $hashtags,
             'status' => 'pending',
             'start_date' => null,
             'finish_date' => null,
@@ -32,6 +38,35 @@ class ScriptMonitorController extends Controller
         return redirect()
             ->route('scripts.monitor')
             ->with('success', 'Script queued successfully.');
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function parseHashtagInput(?string $raw): array
+    {
+        if ($raw === null || trim($raw) === '') {
+            return [];
+        }
+
+        $parts = preg_split('/[\r\n,]+/', $raw, -1, PREG_SPLIT_NO_EMPTY);
+        if (! is_array($parts)) {
+            return [];
+        }
+
+        $seen = [];
+        foreach ($parts as $part) {
+            $tag = trim((string) $part);
+            if ($tag === '') {
+                continue;
+            }
+            if (! str_starts_with($tag, '#')) {
+                $tag = '#'.$tag;
+            }
+            $seen[$tag] = true;
+        }
+
+        return array_keys($seen);
     }
 
     public function index(Request $request): View

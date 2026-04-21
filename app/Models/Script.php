@@ -9,6 +9,8 @@ class Script extends Model
 {
     protected $fillable = [
         'script',
+        'caption',
+        'hashtags',
         'status',
         'start_date',
         'finish_date',
@@ -23,6 +25,7 @@ class Script extends Model
     ];
 
     protected $casts = [
+        'hashtags' => 'array',
         'publish_response' => 'array',
         'start_date' => 'datetime',
         'finish_date' => 'datetime',
