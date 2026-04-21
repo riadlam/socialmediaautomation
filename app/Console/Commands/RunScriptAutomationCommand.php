@@ -3,6 +3,7 @@
 namespace App\Console\Commands;
 
 use App\Models\Script;
+use App\Models\ScriptLog;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Http;
 use Throwable;
@@ -33,6 +34,7 @@ class RunScriptAutomationCommand extends Command
             ->get()
             ->each(function (Script $script): void {
                 try {
+                    $this->writeLog($script, 'generate', 'info', 'Started HeyGen generation request.');
                     $inputText = $this->trimScriptToTargetDuration($script->script);
                     $payload = [
                         'video_inputs' => [[
@@ -82,6 +84,10 @@ class RunScriptAutomationCommand extends Command
                         'poll_attempts' => 0,
                         'error' => null,
                     ]);
+
+                    $this->writeLog($script, 'generate', 'info', 'HeyGen generation accepted.', [
+                        'video_id' => (string) $videoId,
+                    ]);
                 } catch (Throwable $e) {
                     $this->markError($script, 'HeyGen generate exception: '.$e->getMessage());
                 }
@@ -111,6 +117,9 @@ class RunScriptAutomationCommand extends Command
 
                 try {
                     $script->increment('poll_attempts');
+                    $script->update([
+                        'last_polled_at' => now(),
+                    ]);
 
                     $response = Http::timeout(60)
                         ->withHeaders([
@@ -126,6 +135,11 @@ class RunScriptAutomationCommand extends Command
                     }
 
                     $status = data_get($response->json(), 'data.status');
+                    $this->writeLog($script, 'poll', 'info', 'HeyGen status polled.', [
+                        'video_id' => $script->video_id,
+                        'poll_attempts' => $script->fresh()->poll_attempts,
+                        'status' => $status,
+                    ]);
 
                     if ($status === 'completed') {
                         $videoUrl = data_get($response->json(), 'data.video_url');
@@ -139,6 +153,9 @@ class RunScriptAutomationCommand extends Command
                             'status' => 'publishing',
                             'video_url' => $videoUrl,
                             'error' => null,
+                        ]);
+                        $this->writeLog($script, 'poll', 'info', 'HeyGen video completed.', [
+                            'video_url' => $videoUrl,
                         ]);
                         return;
                     }
@@ -172,6 +189,7 @@ class RunScriptAutomationCommand extends Command
                 }
 
                 try {
+                    $this->writeLog($script, 'publish', 'info', 'Started publish request.');
                     $platforms = $this->resolveZrnoPlatforms();
 
                     if ($platforms === []) {
@@ -202,6 +220,7 @@ class RunScriptAutomationCommand extends Command
                         'publish_response' => $response->json(),
                         'error' => null,
                     ]);
+                    $this->writeLog($script, 'publish', 'info', 'Publish completed successfully.');
                 } catch (Throwable $e) {
                     $this->markError($script, 'Zrno publish exception: '.$e->getMessage());
                 }
@@ -217,7 +236,22 @@ class RunScriptAutomationCommand extends Command
             'error' => mb_substr($message, 0, 65535),
         ]);
 
+        $this->writeLog($script, 'error', 'error', $message);
         $this->error("Script #{$script->id}: {$message}");
+    }
+
+    /**
+     * @param array<string, mixed>|null $context
+     */
+    private function writeLog(Script $script, string $stage, string $level, string $message, ?array $context = null): void
+    {
+        ScriptLog::query()->create([
+            'script_id' => $script->id,
+            'stage' => $stage,
+            'level' => $level,
+            'message' => mb_substr($message, 0, 65535),
+            'context' => $context,
+        ]);
     }
 
     private function trimScriptToTargetDuration(string $script): string

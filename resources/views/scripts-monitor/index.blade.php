@@ -222,6 +222,45 @@
             margin-top: 14px;
         }
 
+        .logs-panel {
+            margin-top: 14px;
+        }
+
+        .logs-list {
+            display: grid;
+            gap: 8px;
+        }
+
+        .log-item {
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 10px;
+            background: #0b1220;
+            font-size: 13px;
+        }
+
+        .log-head {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            color: var(--muted);
+            margin-bottom: 5px;
+        }
+
+        .log-level {
+            padding: 2px 8px;
+            border-radius: 999px;
+            border: 1px solid var(--border);
+            text-transform: uppercase;
+            font-size: 11px;
+            color: #bae6fd;
+        }
+
+        .log-level.error {
+            color: #fca5a5;
+            border-color: #991b1b;
+        }
+
         @media (max-width: 900px) {
             .cards {
                 grid-template-columns: repeat(2, minmax(130px, 1fr));
@@ -293,6 +332,7 @@
                     <th>Video ID</th>
                     <th>Video URL</th>
                     <th>Poll</th>
+                    <th>Last Poll</th>
                     <th>Start</th>
                     <th>Finish</th>
                     <th>Error</th>
@@ -317,17 +357,37 @@
                             @endif
                         </td>
                         <td>{{ $script->poll_attempts }}</td>
+                        <td>{{ optional($script->last_polled_at)->toDateTimeString() ?: '-' }}</td>
                         <td>{{ optional($script->start_date)->toDateTimeString() ?: '-' }}</td>
                         <td>{{ optional($script->finish_date)->toDateTimeString() ?: '-' }}</td>
                         <td class="error-cell">{{ $script->error ?: '-' }}</td>
                     </tr>
                 @empty
                     <tr>
-                        <td colspan="9">No script rows found.</td>
+                        <td colspan="10">No script rows found.</td>
                     </tr>
                 @endforelse
                 </tbody>
             </table>
+        </div>
+    </div>
+
+    <div class="panel logs-panel">
+        <h2 style="margin: 0 0 10px;">Recent Updates</h2>
+        <div class="logs-list">
+            @forelse($recentLogs as $log)
+                <div class="log-item">
+                    <div class="log-head">
+                        <span>{{ $log->created_at?->toDateTimeString() }}</span>
+                        <span>Script #{{ $log->script_id ?: '-' }}</span>
+                        <span>Stage: {{ $log->stage }}</span>
+                        <span class="log-level {{ $log->level === 'error' ? 'error' : '' }}">{{ $log->level }}</span>
+                    </div>
+                    <div>{{ $log->message }}</div>
+                </div>
+            @empty
+                <div class="log-item">No updates yet.</div>
+            @endforelse
         </div>
     </div>
 

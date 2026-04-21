@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\Script;
+use App\Models\ScriptLog;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Contracts\View\View;
 use Illuminate\Http\Request;
@@ -52,6 +53,10 @@ class ScriptMonitorController extends Controller
 
         return view('scripts-monitor.index', [
             'scripts' => $scripts,
+            'recentLogs' => ScriptLog::query()
+                ->latest('id')
+                ->limit(30)
+                ->get(),
             'status' => $status,
             'counts' => [
                 'all' => Script::query()->count(),

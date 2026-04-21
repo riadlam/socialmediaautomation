@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class Script extends Model
 {
@@ -15,6 +16,7 @@ class Script extends Model
         'video_id',
         'video_url',
         'poll_attempts',
+        'last_polled_at',
         'error',
         'publish_response',
     ];
@@ -23,6 +25,12 @@ class Script extends Model
         'publish_response' => 'array',
         'start_date' => 'datetime',
         'finish_date' => 'datetime',
+        'last_polled_at' => 'datetime',
     ];
+
+    public function logs(): HasMany
+    {
+        return $this->hasMany(ScriptLog::class);
+    }
 }
 
