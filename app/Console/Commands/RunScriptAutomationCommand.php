@@ -80,7 +80,7 @@ class RunScriptAutomationCommand extends Command
                         'video_id' => (string) $videoId,
                         'aspect_ratio' => (string) ($payload['aspect_ratio'] ?? ''),
                         'resolution' => (string) ($payload['resolution'] ?? ''),
-                        'caption' => (bool) ($payload['caption'] ?? false),
+                        'caption' => $payload['caption'] ?? null,
                     ]);
                 } catch (Throwable $e) {
                     $this->markError($script, 'HeyGen generate exception: '.$e->getMessage());
@@ -156,7 +156,7 @@ class RunScriptAutomationCommand extends Command
                         $videoUrl = $this->resolveHeyGenCompletedVideoUrl($state);
 
                         if (! $videoUrl) {
-                            $this->markError($script, 'HeyGen completed but no usable video URL (video_url / video_url_caption).');
+                            $this->markError($script, 'HeyGen completed but no usable video URL (video_url / captioned_video_url / video_url_caption).');
                             return;
                         }
 
@@ -167,7 +167,8 @@ class RunScriptAutomationCommand extends Command
                         ]);
                         $this->writeLog($script, 'poll', 'info', 'HeyGen video completed.', [
                             'video_url' => $videoUrl,
-                            'used_caption_render' => (bool) (($state['video_url_caption'] ?? null) && $videoUrl === $state['video_url_caption']),
+                            'used_caption_render' => $videoUrl === ($state['captioned_video_url'] ?? null)
+                                || $videoUrl === ($state['video_url_caption'] ?? null),
                         ]);
                         return;
                     }
@@ -435,7 +436,13 @@ class RunScriptAutomationCommand extends Command
         }
 
         if ((bool) config('services.heygen.caption', true)) {
-            $payload['caption'] = true;
+            $fileFormat = strtolower(trim((string) config('services.heygen.caption_file_format', 'srt')));
+            if ($fileFormat !== 'srt') {
+                $fileFormat = 'srt';
+            }
+            $payload['caption'] = [
+                'file_format' => $fileFormat,
+            ];
         }
 
         return $payload;
@@ -497,16 +504,16 @@ class RunScriptAutomationCommand extends Command
     }
 
     /**
-     * Parses GET /v1/video_status.get JSON ({ code, data: { status, video_url, video_url_caption, error } }) or similar shapes.
+     * Parses GET /v1/video_status.get JSON ({ code, data: { status, video_url, captioned_video_url, video_url_caption, error } }) or similar shapes.
      *
      * @param array<string, mixed>|null $json
      *
-     * @return array{status: ?string, video_url: ?string, video_url_caption: ?string, error: mixed}
+     * @return array{status: ?string, video_url: ?string, captioned_video_url: ?string, video_url_caption: ?string, error: mixed}
      */
     private function parseHeyGenV2VideoPollState(?array $json): array
     {
         if (! is_array($json)) {
-            return ['status' => null, 'video_url' => null, 'video_url_caption' => null, 'error' => null];
+            return ['status' => null, 'video_url' => null, 'captioned_video_url' => null, 'video_url_caption' => null, 'error' => null];
         }
 
         $data = data_get($json, 'data');
@@ -519,24 +526,31 @@ class RunScriptAutomationCommand extends Command
                     ?? data_get($block, 'url')
                     ?? data_get($block, 'video.video_url')
             ),
+            'captioned_video_url' => $this->scalarToNullableString(data_get($block, 'captioned_video_url')),
             'video_url_caption' => $this->scalarToNullableString(data_get($block, 'video_url_caption')),
             'error' => data_get($block, 'error') ?? data_get($block, 'message') ?? data_get($json, 'error'),
         ];
     }
 
     /**
-     * When captions are enabled, prefer HeyGen’s caption-burned MP4 (`video_url_caption`) if present.
+     * When captions are enabled, prefer HeyGen’s burned-in MP4 (captioned_video_url or legacy video_url_caption), else plain video_url.
      *
-     * @param array{status: ?string, video_url: ?string, video_url_caption: ?string, error: mixed} $state
+     * @param array{status: ?string, video_url: ?string, captioned_video_url: ?string, video_url_caption: ?string, error: mixed} $state
      */
     private function resolveHeyGenCompletedVideoUrl(array $state): ?string
     {
         $wantCaptions = (bool) config('services.heygen.caption', true);
-        $captionUrl = $state['video_url_caption'] ?? null;
+        $captioned = $state['captioned_video_url'] ?? null;
+        $legacyCaption = $state['video_url_caption'] ?? null;
         $plainUrl = $state['video_url'] ?? null;
 
-        if ($wantCaptions && is_string($captionUrl) && $captionUrl !== '') {
-            return $captionUrl;
+        if ($wantCaptions) {
+            if (is_string($captioned) && $captioned !== '') {
+                return $captioned;
+            }
+            if (is_string($legacyCaption) && $legacyCaption !== '') {
+                return $legacyCaption;
+            }
         }
 
         return is_string($plainUrl) && $plainUrl !== '' ? $plainUrl : null;

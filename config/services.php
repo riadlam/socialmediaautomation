@@ -44,8 +44,9 @@ return [
         'target_seconds' => env('HEYGEN_TARGET_SECONDS', 20),
         'words_per_minute' => env('HEYGEN_WORDS_PER_MINUTE', 150),
         // POST https://api.heygen.com/v2/videos — see HeyGen “Generate Video” API.
-        // Burned-in subtitles on the rendered file (when HeyGen accepts `caption` on this endpoint).
+        // When true, sends `caption: { file_format }` (CaptionSetting). HeyGen may return a burned-in URL as captioned_video_url / video_url_caption and/or subtitle_url (SRT).
         'caption' => env('HEYGEN_CAPTION', true),
+        'caption_file_format' => env('HEYGEN_CAPTION_FILE_FORMAT', 'srt'),
         'aspect_ratio' => env('HEYGEN_ASPECT_RATIO', '9:16'),
         'resolution' => env('HEYGEN_RESOLUTION', '1080p'),
         // Photo / Avatar IV style motion (optional).
