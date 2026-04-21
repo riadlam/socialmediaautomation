@@ -39,25 +39,7 @@ class RunScriptAutomationCommand extends Command
             ->each(function (Script $script): void {
                 try {
                     $this->writeLog($script, 'generate', 'info', 'Started HeyGen generation request.');
-                    $inputText = $this->trimScriptToTargetDuration($script->script);
-                    $payload = [
-                        'video_inputs' => [[
-                            'character' => [
-                                'type' => 'avatar',
-                                'avatar_id' => (string) config('services.heygen.avatar_id'),
-                            ],
-                            'voice' => [
-                                'type' => 'text',
-                                'input_text' => $inputText,
-                            ],
-                        ]],
-                        'title' => 'script-'.$script->id,
-                        'callback_id' => (string) $script->id,
-                    ];
-
-                    if (filled(config('services.heygen.voice_id'))) {
-                        $payload['video_inputs'][0]['voice']['voice_id'] = (string) config('services.heygen.voice_id');
-                    }
+                    $payload = $this->buildHeyGenGeneratePayload($script);
 
                     $response = Http::timeout(60)
                         ->withHeaders([
@@ -91,6 +73,9 @@ class RunScriptAutomationCommand extends Command
 
                     $this->writeLog($script, 'generate', 'info', 'HeyGen generation accepted.', [
                         'video_id' => (string) $videoId,
+                        'scene_count' => count($payload['video_inputs'] ?? []),
+                        'caption' => (bool) ($payload['caption'] ?? false),
+                        'scene_split' => (string) config('services.heygen.scene_split', 'auto'),
                     ]);
                 } catch (Throwable $e) {
                     $this->markError($script, 'HeyGen generate exception: '.$e->getMessage());
@@ -214,7 +199,7 @@ class RunScriptAutomationCommand extends Command
                         'accountId' => $selectedPlatform['accountId'],
                     ]);
 
-                    // Zerno `content`: scripts.caption (falls back to scripts.script for legacy rows).
+                    // Zerno `content`: caption (or script) + hashtags in the same string so Instagram shows them.
                     $caption = $this->buildPublishCaption($script);
                     $postPayload = [
                         'content' => $caption,
@@ -225,10 +210,6 @@ class RunScriptAutomationCommand extends Command
                         'platforms' => [$selectedPlatform],
                         'publishNow' => true,
                     ];
-                    $hashtags = $this->resolvePublishHashtags($script);
-                    if ($hashtags !== []) {
-                        $postPayload['hashtags'] = $hashtags;
-                    }
 
                     $response = Http::timeout(60)
                         ->withToken((string) config('services.zrno.api_key'))
@@ -264,7 +245,8 @@ class RunScriptAutomationCommand extends Command
 
     /**
      * Text sent as Zerno `content`: `scripts.caption` when set, otherwise `scripts.script` (legacy rows).
-     * Optional unique suffix avoids duplicate-content blocks on Zerno.
+     * Hashtags are appended to this string so they appear in the Instagram/TikTok caption (not only API metadata).
+     * Optional ref suffix is off by default; enable only if you need duplicate-post avoidance on Zerno.
      *
      * @see config('services.zrno.append_unique_caption_suffix')
      */
@@ -273,15 +255,20 @@ class RunScriptAutomationCommand extends Command
         $caption = trim((string) ($script->caption ?? ''));
         $body = $caption !== '' ? $caption : trim((string) $script->script);
 
-        if (! (bool) config('services.zrno.append_unique_caption_suffix', true)) {
-            return $body;
+        $tags = $this->resolvePublishHashtags($script);
+        if ($tags !== []) {
+            $body .= "\n\n".implode(' ', $tags);
         }
 
-        return $body.sprintf(
-            "\n\n— Ref #%d · %s UTC",
-            $script->id,
-            now()->utc()->format('Y-m-d H:i')
-        );
+        if ((bool) config('services.zrno.append_unique_caption_suffix', false)) {
+            return $body.sprintf(
+                "\n\n— Ref #%d · %s UTC",
+                $script->id,
+                now()->utc()->format('Y-m-d H:i')
+            );
+        }
+
+        return $body;
     }
 
     /**
@@ -383,12 +370,205 @@ class RunScriptAutomationCommand extends Command
         ]);
     }
 
-    private function trimScriptToTargetDuration(string $script): string
+    /**
+     * Full HeyGen POST body for /v2/video/generate (multi-scene advice format + captions + optional size).
+     *
+     * @return array<string, mixed>
+     */
+    private function buildHeyGenGeneratePayload(Script $script): array
     {
-        $clean = trim(preg_replace('/\s+/', ' ', $script) ?? $script);
+        $videoInputs = $this->buildHeyGenVideoInputs($script);
+
+        $payload = [
+            'video_inputs' => $videoInputs,
+            'title' => 'script-'.$script->id,
+            'callback_id' => (string) $script->id,
+        ];
+
+        if ((bool) config('services.heygen.caption', true)) {
+            $payload['caption'] = true;
+        }
+
+        if ((bool) config('services.heygen.open_caption', false)) {
+            $payload['open_caption'] = true;
+        }
+
+        $dimensionWidth = (int) config('services.heygen.dimension_width', 1080);
+        $dimensionHeight = (int) config('services.heygen.dimension_height', 1920);
+        if ($dimensionWidth <= 0) {
+            $dimensionWidth = 1080;
+        }
+        if ($dimensionHeight <= 0) {
+            $dimensionHeight = 1920;
+        }
+        $payload['dimension'] = [
+            'width' => $dimensionWidth,
+            'height' => $dimensionHeight,
+        ];
+
+        return $payload;
+    }
+
+    /**
+     * @return list<array<string, mixed>>
+     */
+    private function buildHeyGenVideoInputs(Script $script): array
+    {
+        $raw = trim((string) $script->script);
+        if ($raw === '') {
+            return [[
+                'character' => $this->heyGenCharacterBlock(),
+                'voice' => $this->heyGenVoiceBlock('.'),
+            ]];
+        }
+
+        $scenes = (bool) config('services.heygen.multi_scene', true)
+            ? $this->splitScriptIntoScenes($raw)
+            : [$this->trimScriptToTargetDuration($raw)];
+
+        $scenes = array_values(array_filter($scenes, static fn (string $s): bool => trim($s) !== ''));
+
+        if ($scenes === []) {
+            $scenes = [$raw];
+        }
+
+        $maxWordsTotal = $this->maxWordsForVideoBudget();
+        $sceneCount = max(1, count($scenes));
+        $perSceneWordCap = max(1, (int) floor($maxWordsTotal / $sceneCount));
+
+        $inputs = [];
+        foreach ($scenes as $sceneText) {
+            $line = $this->trimTextToWordLimit(trim($sceneText), $perSceneWordCap);
+            if ($line === '') {
+                continue;
+            }
+            $inputs[] = [
+                'character' => $this->heyGenCharacterBlock(),
+                'voice' => $this->heyGenVoiceBlock($line),
+            ];
+        }
+
+        if ($inputs === []) {
+            $inputs[] = [
+                'character' => $this->heyGenCharacterBlock(),
+                'voice' => $this->heyGenVoiceBlock($this->trimTextToWordLimit($raw, $maxWordsTotal)),
+            ];
+        }
+
+        return $inputs;
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    private function heyGenCharacterBlock(): array
+    {
+        $character = [
+            'type' => 'avatar',
+            'avatar_id' => (string) config('services.heygen.avatar_id'),
+        ];
+
+        if (filled(config('services.heygen.orientation'))) {
+            $character['orientation'] = (string) config('services.heygen.orientation');
+        }
+
+        return $character;
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    private function heyGenVoiceBlock(string $inputText): array
+    {
+        $voice = [
+            'type' => 'text',
+            'input_text' => $inputText,
+        ];
+
+        if (filled(config('services.heygen.voice_id'))) {
+            $voice['voice_id'] = (string) config('services.heygen.voice_id');
+        }
+
+        return $voice;
+    }
+
+    private function maxWordsForVideoBudget(): int
+    {
         $targetSeconds = (int) config('services.heygen.target_seconds', 20);
         $wpm = (int) config('services.heygen.words_per_minute', 150);
-        $maxWords = max(1, (int) floor(($targetSeconds / 60) * $wpm));
+
+        return max(1, (int) floor(($targetSeconds / 60) * $wpm));
+    }
+
+    /**
+     * Splits advice / self-improvement style scripts into HeyGen scenes: paragraphs first, else one line per beat
+     * (fits short-form “wisdom” lines like your example).
+     *
+     * @return list<string>
+     */
+    private function splitScriptIntoScenes(string $script): array
+    {
+        $mode = strtolower(trim((string) config('services.heygen.scene_split', 'auto')));
+        $maxScenes = max(1, min(50, (int) config('services.heygen.max_scenes', 12)));
+        $normalized = trim((string) (preg_replace("/\r\n|\r/", "\n", $script) ?? $script));
+
+        if ($mode === 'single') {
+            return [$normalized];
+        }
+
+        if ($mode === 'paragraph') {
+            $parts = preg_split('/\n\s*\n+/', $normalized, -1, PREG_SPLIT_NO_EMPTY);
+            $parts = array_values(array_filter(array_map('trim', is_array($parts) ? $parts : [])));
+
+            return $this->capSceneCount($parts !== [] ? $parts : [$normalized], $maxScenes);
+        }
+
+        if ($mode === 'line') {
+            $lines = preg_split('/\n+/', $normalized, -1, PREG_SPLIT_NO_EMPTY);
+            $lines = array_values(array_filter(array_map('trim', is_array($lines) ? $lines : [])));
+
+            return $this->capSceneCount($lines !== [] ? $lines : [$normalized], $maxScenes);
+        }
+
+        // auto: paragraphs if 2+, else lines if 2+, else single scene
+        $paragraphs = preg_split('/\n\s*\n+/', $normalized, -1, PREG_SPLIT_NO_EMPTY);
+        $paragraphs = array_values(array_filter(array_map('trim', is_array($paragraphs) ? $paragraphs : [])));
+        if (count($paragraphs) >= 2) {
+            return $this->capSceneCount($paragraphs, $maxScenes);
+        }
+
+        $lines = preg_split('/\n+/', $normalized, -1, PREG_SPLIT_NO_EMPTY);
+        $lines = array_values(array_filter(array_map('trim', is_array($lines) ? $lines : [])));
+        if (count($lines) >= 2) {
+            return $this->capSceneCount($lines, $maxScenes);
+        }
+
+        return [$normalized];
+    }
+
+    /**
+     * @param list<string> $scenes
+     * @return list<string>
+     */
+    private function capSceneCount(array $scenes, int $maxScenes): array
+    {
+        if (count($scenes) <= $maxScenes) {
+            return $scenes;
+        }
+
+        $head = array_slice($scenes, 0, $maxScenes - 1);
+        $tail = array_slice($scenes, $maxScenes - 1);
+        $merged = trim(implode(' ', $tail));
+        if ($merged !== '') {
+            $head[] = $merged;
+        }
+
+        return $head;
+    }
+
+    private function trimTextToWordLimit(string $script, int $maxWords): string
+    {
+        $clean = trim(preg_replace('/\s+/', ' ', $script) ?? $script);
         $words = preg_split('/\s+/', $clean, -1, PREG_SPLIT_NO_EMPTY);
 
         if (! is_array($words) || count($words) <= $maxWords) {
@@ -396,6 +576,11 @@ class RunScriptAutomationCommand extends Command
         }
 
         return implode(' ', array_slice($words, 0, $maxWords));
+    }
+
+    private function trimScriptToTargetDuration(string $script): string
+    {
+        return $this->trimTextToWordLimit($script, $this->maxWordsForVideoBudget());
     }
 
     /**
