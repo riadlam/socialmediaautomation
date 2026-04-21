@@ -38,21 +38,22 @@ return [
     'heygen' => [
         'api_key' => env('HEYGEN_API_KEY'),
         'avatar_id' => env('HEYGEN_AVATAR_ID'),
+        // Required with `script` for POST /v2/videos (Generate Video).
         'voice_id' => env('HEYGEN_VOICE_ID'),
-        'orientation' => env('HEYGEN_ORIENTATION'),
         'max_poll_attempts' => env('HEYGEN_MAX_POLL_ATTEMPTS', 60),
         'target_seconds' => env('HEYGEN_TARGET_SECONDS', 20),
         'words_per_minute' => env('HEYGEN_WORDS_PER_MINUTE', 150),
-        // On-video captions (text voice). See HeyGen Create Avatar Video v2 docs.
-        'caption' => env('HEYGEN_CAPTION', true),
-        'open_caption' => env('HEYGEN_OPEN_CAPTION', false),
-        // Default 9:16 vertical (Shorts / Reels / TikTok). Set width to 0 to omit dimension from API.
-        'dimension_width' => env('HEYGEN_DIMENSION_WIDTH', 1080),
-        'dimension_height' => env('HEYGEN_DIMENSION_HEIGHT', 1920),
-        // Multi-scene: advice-style scripts split into beats (blank line = paragraph, else one line per scene).
+        // POST https://api.heygen.com/v2/videos — see HeyGen “Generate Video” API.
+        'aspect_ratio' => env('HEYGEN_ASPECT_RATIO', '9:16'),
+        'resolution' => env('HEYGEN_RESOLUTION', '1080p'),
+        // Photo / Avatar IV style motion (optional).
+        'motion_prompt' => env('HEYGEN_MOTION_PROMPT'),
+        'expressiveness' => env('HEYGEN_EXPRESSIVENESS'),
+        // Solid background: type color + hex. Set HEYGEN_BACKGROUND_COLOR=none to omit.
+        'background_color' => env('HEYGEN_BACKGROUND_COLOR', '#0a0a0a'),
+        // Join multi-line advice scripts into one `script` (paragraph breaks between beats).
         'multi_scene' => env('HEYGEN_MULTI_SCENE', true),
         'max_scenes' => env('HEYGEN_MAX_SCENES', 12),
-        // auto | paragraph | line | single — "auto" uses paragraphs if 2+, else lines if 2+, else one scene.
         'scene_split' => env('HEYGEN_SCENE_SPLIT', 'auto'),
     ],
 
