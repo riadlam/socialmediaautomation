@@ -80,6 +80,7 @@ class RunScriptAutomationCommand extends Command
                         'video_id' => (string) $videoId,
                         'aspect_ratio' => (string) ($payload['aspect_ratio'] ?? ''),
                         'resolution' => (string) ($payload['resolution'] ?? ''),
+                        'caption' => (bool) ($payload['caption'] ?? false),
                     ]);
                 } catch (Throwable $e) {
                     $this->markError($script, 'HeyGen generate exception: '.$e->getMessage());
@@ -152,10 +153,10 @@ class RunScriptAutomationCommand extends Command
                     $statusLower = is_string($status) ? strtolower($status) : '';
 
                     if (in_array($statusLower, ['completed', 'complete', 'succeeded', 'success'], true)) {
-                        $videoUrl = $state['video_url'];
+                        $videoUrl = $this->resolveHeyGenCompletedVideoUrl($state);
 
                         if (! $videoUrl) {
-                            $this->markError($script, 'HeyGen completed but video_url is missing.');
+                            $this->markError($script, 'HeyGen completed but no usable video URL (video_url / video_url_caption).');
                             return;
                         }
 
@@ -166,6 +167,7 @@ class RunScriptAutomationCommand extends Command
                         ]);
                         $this->writeLog($script, 'poll', 'info', 'HeyGen video completed.', [
                             'video_url' => $videoUrl,
+                            'used_caption_render' => (bool) (($state['video_url_caption'] ?? null) && $videoUrl === $state['video_url_caption']),
                         ]);
                         return;
                     }
@@ -432,6 +434,10 @@ class RunScriptAutomationCommand extends Command
             $payload['expressiveness'] = $expr;
         }
 
+        if ((bool) config('services.heygen.caption', true)) {
+            $payload['caption'] = true;
+        }
+
         return $payload;
     }
 
@@ -491,16 +497,16 @@ class RunScriptAutomationCommand extends Command
     }
 
     /**
-     * Parses GET /v1/video_status.get JSON ({ code, data: { status, video_url, error } }) or similar shapes.
+     * Parses GET /v1/video_status.get JSON ({ code, data: { status, video_url, video_url_caption, error } }) or similar shapes.
      *
      * @param array<string, mixed>|null $json
      *
-     * @return array{status: ?string, video_url: ?string, error: mixed}
+     * @return array{status: ?string, video_url: ?string, video_url_caption: ?string, error: mixed}
      */
     private function parseHeyGenV2VideoPollState(?array $json): array
     {
         if (! is_array($json)) {
-            return ['status' => null, 'video_url' => null, 'error' => null];
+            return ['status' => null, 'video_url' => null, 'video_url_caption' => null, 'error' => null];
         }
 
         $data = data_get($json, 'data');
@@ -513,8 +519,27 @@ class RunScriptAutomationCommand extends Command
                     ?? data_get($block, 'url')
                     ?? data_get($block, 'video.video_url')
             ),
+            'video_url_caption' => $this->scalarToNullableString(data_get($block, 'video_url_caption')),
             'error' => data_get($block, 'error') ?? data_get($block, 'message') ?? data_get($json, 'error'),
         ];
+    }
+
+    /**
+     * When captions are enabled, prefer HeyGen’s caption-burned MP4 (`video_url_caption`) if present.
+     *
+     * @param array{status: ?string, video_url: ?string, video_url_caption: ?string, error: mixed} $state
+     */
+    private function resolveHeyGenCompletedVideoUrl(array $state): ?string
+    {
+        $wantCaptions = (bool) config('services.heygen.caption', true);
+        $captionUrl = $state['video_url_caption'] ?? null;
+        $plainUrl = $state['video_url'] ?? null;
+
+        if ($wantCaptions && is_string($captionUrl) && $captionUrl !== '') {
+            return $captionUrl;
+        }
+
+        return is_string($plainUrl) && $plainUrl !== '' ? $plainUrl : null;
     }
 
     private function scalarToNullableString(mixed $value): ?string
