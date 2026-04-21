@@ -4,7 +4,6 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Scripts Monitor</title>
-    <meta http-equiv="refresh" content="20">
     <style>
         :root {
             color-scheme: light dark;
@@ -251,6 +250,19 @@
             margin-top: 14px;
         }
 
+        .logs-panel-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+
+        .logs-panel-header h2 {
+            margin: 0;
+        }
+
         .logs-list {
             display: grid;
             gap: 8px;
@@ -298,7 +310,7 @@
     <div class="header">
         <div>
             <h1 class="title">Scripts Monitor</h1>
-            <div class="subtitle">Auto-refresh every 20 seconds.</div>
+            <div class="subtitle">Refresh the page manually to see the latest status.</div>
         </div>
         <button type="button" class="btn btn-primary" id="toggle-create-form">+ Add Script</button>
     </div>
@@ -308,10 +320,17 @@
     @endif
 
     @if($errors->any())
-        <div class="flash flash-error">{{ $errors->first() }}</div>
+        <div class="flash flash-error">
+            <strong>Could not save:</strong>
+            <ul style="margin: 8px 0 0 18px;">
+                @foreach($errors->all() as $message)
+                    <li>{{ $message }}</li>
+                @endforeach
+            </ul>
+        </div>
     @endif
 
-    <div class="create-form panel @if($errors->any()) show @endif" id="create-form">
+    <div class="create-form panel @if($errors->any() || filled(old('script')) || filled(old('caption'))) show @endif" id="create-form">
         <form method="POST" action="{{ route('scripts.monitor.store') }}">
             @csrf
             <label for="script">Video script (HeyGen)</label>
@@ -397,8 +416,8 @@
                             @endphp
                             <span class="text-preview"
                                   data-preview
-                                  data-short="{{ $shortScript }}"
-                                  data-full="{{ $fullScript }}">{{ $shortScript }}</span>
+                                  data-preview-short="{{ base64_encode($shortScript) }}"
+                                  data-preview-full="{{ base64_encode($fullScript) }}">{{ $shortScript }}</span>
                             @if($canExpandScript)
                                 <br>
                                 <button type="button" class="btn btn-ghost expand-btn" data-expand-toggle>Expand</button>
@@ -433,8 +452,8 @@
                             @endphp
                             <span class="text-preview"
                                   data-preview
-                                  data-short="{{ $shortError }}"
-                                  data-full="{{ $fullError }}">{{ $shortError }}</span>
+                                  data-preview-short="{{ base64_encode($shortError) }}"
+                                  data-preview-full="{{ base64_encode($fullError) }}">{{ $shortError }}</span>
                             @if($canExpandError)
                                 <br>
                                 <button type="button" class="btn btn-ghost expand-btn" data-expand-toggle>Expand</button>
@@ -452,7 +471,13 @@
     </div>
 
     <div class="panel logs-panel">
-        <h2 style="margin: 0 0 10px;">Recent Updates</h2>
+        <div class="logs-panel-header">
+            <h2>Recent Updates</h2>
+            <form method="POST" action="{{ route('scripts.monitor.clear-logs') }}" onsubmit="return confirm('Clear all recent updates from the log?');">
+                @csrf
+                <button type="submit" class="btn btn-ghost">Clear log</button>
+            </form>
+        </div>
         <div class="logs-list">
             @forelse($recentLogs as $log)
                 <div class="log-item">
@@ -476,6 +501,19 @@
 </div>
 
 <script>
+    function utf8FromBase64(b64) {
+        try {
+            const binary = atob(b64);
+            const bytes = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) {
+                bytes[i] = binary.charCodeAt(i);
+            }
+            return new TextDecoder('utf-8').decode(bytes);
+        } catch (e) {
+            return '';
+        }
+    }
+
     const createForm = document.getElementById('create-form');
     const toggleButton = document.getElementById('toggle-create-form');
     const cancelButton = document.getElementById('cancel-create-form');
@@ -495,8 +533,10 @@
                 return;
             }
 
+            const short = utf8FromBase64(preview.dataset.previewShort);
+            const full = utf8FromBase64(preview.dataset.previewFull);
             const isExpanded = button.dataset.expanded === 'true';
-            preview.textContent = isExpanded ? preview.dataset.short : preview.dataset.full;
+            preview.textContent = isExpanded ? short : full;
             button.dataset.expanded = isExpanded ? 'false' : 'true';
             button.textContent = isExpanded ? 'Expand' : 'Collapse';
         });

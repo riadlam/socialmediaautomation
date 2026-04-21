@@ -40,6 +40,15 @@ class ScriptMonitorController extends Controller
             ->with('success', 'Script queued successfully.');
     }
 
+    public function clearLogs(): RedirectResponse
+    {
+        ScriptLog::query()->delete();
+
+        return redirect()
+            ->route('scripts.monitor')
+            ->with('success', 'Recent updates log cleared.');
+    }
+
     /**
      * @return list<string>
      */
