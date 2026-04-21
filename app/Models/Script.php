@@ -15,6 +15,7 @@ class Script extends Model
         'heygen_session_id',
         'video_id',
         'video_url',
+        'published_platform',
         'poll_attempts',
         'last_polled_at',
         'error',

@@ -25,12 +25,15 @@ class RunScriptAutomationCommand extends Command
 
     private function processPending(): void
     {
-        $limit = (int) $this->option('limit');
+        if ($this->hasActiveWorkInProgress()) {
+            $this->info('Skipping pending queue: a script is still generating/publishing.');
+            return;
+        }
 
         Script::query()
             ->where('status', 'pending')
             ->orderBy('id')
-            ->limit($limit)
+            ->limit(1)
             ->get()
             ->each(function (Script $script): void {
                 try {
@@ -92,6 +95,13 @@ class RunScriptAutomationCommand extends Command
                     $this->markError($script, 'HeyGen generate exception: '.$e->getMessage());
                 }
             });
+    }
+
+    private function hasActiveWorkInProgress(): bool
+    {
+        return Script::query()
+            ->whereIn('status', ['generating', 'publishing'])
+            ->exists();
     }
 
     private function processGenerating(): void
@@ -197,6 +207,12 @@ class RunScriptAutomationCommand extends Command
                         return;
                     }
 
+                    $selectedPlatform = $this->resolveNextPublishPlatform($platforms);
+                    $this->writeLog($script, 'publish', 'info', 'Selected platform for this publish.', [
+                        'platform' => $selectedPlatform['platform'],
+                        'accountId' => $selectedPlatform['accountId'],
+                    ]);
+
                     $response = Http::timeout(60)
                         ->withToken((string) config('services.zrno.api_key'))
                         ->post((string) config('services.zrno.base_url').'/v1/posts', [
@@ -205,7 +221,7 @@ class RunScriptAutomationCommand extends Command
                                 'type' => 'video',
                                 'url' => $script->video_url,
                             ]],
-                            'platforms' => $platforms,
+                            'platforms' => [$selectedPlatform],
                             'publishNow' => true,
                         ]);
 
@@ -217,10 +233,13 @@ class RunScriptAutomationCommand extends Command
                     $script->update([
                         'status' => 'done',
                         'finish_date' => now(),
+                        'published_platform' => $selectedPlatform['platform'],
                         'publish_response' => $response->json(),
                         'error' => null,
                     ]);
-                    $this->writeLog($script, 'publish', 'info', 'Publish completed successfully.');
+                    $this->writeLog($script, 'publish', 'info', 'Publish completed successfully.', [
+                        'platform' => $selectedPlatform['platform'],
+                    ]);
                 } catch (Throwable $e) {
                     $this->markError($script, 'Zrno publish exception: '.$e->getMessage());
                 }
@@ -315,6 +334,33 @@ class RunScriptAutomationCommand extends Command
             'platform' => $platform,
             'accountId' => $accountId,
         ]];
+    }
+
+    /**
+     * @param array<int, array{platform:string,accountId:string}> $platforms
+     * @return array{platform:string,accountId:string}
+     */
+    private function resolveNextPublishPlatform(array $platforms): array
+    {
+        $lastPublishedPlatform = Script::query()
+            ->whereNotNull('published_platform')
+            ->orderByDesc('id')
+            ->value('published_platform');
+
+        if (! is_string($lastPublishedPlatform) || $lastPublishedPlatform === '') {
+            return $platforms[0];
+        }
+
+        foreach ($platforms as $index => $platform) {
+            if ($platform['platform'] !== $lastPublishedPlatform) {
+                continue;
+            }
+
+            $nextIndex = ($index + 1) % count($platforms);
+            return $platforms[$nextIndex];
+        }
+
+        return $platforms[0];
     }
 }
 

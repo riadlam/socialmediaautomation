@@ -331,6 +331,7 @@
                     <th>Script</th>
                     <th>Video ID</th>
                     <th>Video URL</th>
+                    <th>Published On</th>
                     <th>Poll</th>
                     <th>Last Poll</th>
                     <th>Start</th>
@@ -356,6 +357,7 @@
                                 -
                             @endif
                         </td>
+                        <td>{{ $script->published_platform ?: '-' }}</td>
                         <td>{{ $script->poll_attempts }}</td>
                         <td>{{ optional($script->last_polled_at)->toDateTimeString() ?: '-' }}</td>
                         <td>{{ optional($script->start_date)->toDateTimeString() ?: '-' }}</td>
@@ -364,7 +366,7 @@
                     </tr>
                 @empty
                     <tr>
-                        <td colspan="10">No script rows found.</td>
+                        <td colspan="11">No script rows found.</td>
                     </tr>
                 @endforelse
                 </tbody>
