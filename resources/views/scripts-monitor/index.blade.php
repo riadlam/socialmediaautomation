@@ -229,6 +229,16 @@
             word-break: break-word;
         }
 
+        .text-preview {
+            display: inline;
+        }
+
+        .expand-btn {
+            margin-top: 6px;
+            padding: 4px 8px;
+            font-size: 12px;
+        }
+
         .error-cell {
             color: #fca5a5;
         }
@@ -379,7 +389,21 @@
                                 {{ $script->status }}
                             </span>
                         </td>
-                        <td class="script-cell">{{ $script->script }}</td>
+                        <td class="script-cell">
+                            @php
+                                $fullScript = (string) $script->script;
+                                $shortScript = \Illuminate\Support\Str::limit($fullScript, 60, '...');
+                                $canExpandScript = \Illuminate\Support\Str::length($fullScript) > 60;
+                            @endphp
+                            <span class="text-preview"
+                                  data-preview
+                                  data-short="{{ $shortScript }}"
+                                  data-full="{{ $fullScript }}">{{ $shortScript }}</span>
+                            @if($canExpandScript)
+                                <br>
+                                <button type="button" class="btn btn-ghost expand-btn" data-expand-toggle>Expand</button>
+                            @endif
+                        </td>
                         <td class="script-cell">{{ $script->caption ?: '—' }}</td>
                         <td class="script-cell">
                             @if(is_array($script->hashtags) && count($script->hashtags) > 0)
@@ -448,6 +472,20 @@
 
     cancelButton.addEventListener('click', () => {
         createForm.classList.remove('show');
+    });
+
+    document.querySelectorAll('[data-expand-toggle]').forEach((button) => {
+        button.addEventListener('click', () => {
+            const preview = button.closest('td')?.querySelector('[data-preview]');
+            if (!preview) {
+                return;
+            }
+
+            const isExpanded = button.dataset.expanded === 'true';
+            preview.textContent = isExpanded ? preview.dataset.short : preview.dataset.full;
+            button.dataset.expanded = isExpanded ? 'false' : 'true';
+            button.textContent = isExpanded ? 'Expand' : 'Collapse';
+        });
     });
 </script>
 </body>
