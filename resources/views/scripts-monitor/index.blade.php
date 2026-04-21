@@ -180,10 +180,11 @@
             overflow-x: auto;
         }
 
-        table {
+        table.scripts-monitor-table {
             width: 100%;
             border-collapse: collapse;
             font-size: 14px;
+            table-layout: fixed;
         }
 
         th, td {
@@ -221,24 +222,43 @@
             color: #fca5a5;
         }
 
-        .script-cell,
-        .error-cell {
-            max-width: 300px;
+        .td-clamp {
+            vertical-align: top;
+            max-width: 14rem;
+        }
+
+        .td-clamp-wide {
+            max-width: 18rem;
+        }
+
+        .cell-clamp {
+            max-height: 5.25rem;
+            overflow: hidden;
+            border-radius: 4px;
+        }
+
+        .cell-clamp.is-expanded {
+            max-height: min(42vh, 22rem);
+            overflow-y: auto;
+            border: 1px solid var(--border);
+            padding: 6px;
+            background: #0b1220;
+        }
+
+        .cell-clamp-inner {
             white-space: pre-wrap;
             word-break: break-word;
+            font-size: 13px;
+            line-height: 1.35;
         }
 
-        .text-preview {
-            display: inline;
-        }
-
-        .expand-btn {
+        .expand-cell-btn {
             margin-top: 6px;
-            padding: 4px 8px;
-            font-size: 12px;
+            padding: 3px 8px;
+            font-size: 11px;
         }
 
-        .error-cell {
+        .error-cell .cell-clamp-inner {
             color: #fca5a5;
         }
 
@@ -381,7 +401,7 @@
         </form>
 
         <div class="table-wrap">
-            <table>
+            <table class="scripts-monitor-table">
                 <thead>
                 <tr>
                     <th>ID</th>
@@ -408,56 +428,39 @@
                                 {{ $script->status }}
                             </span>
                         </td>
-                        <td class="script-cell">
-                            @php
-                                $fullScript = (string) $script->script;
-                                $shortScript = \Illuminate\Support\Str::limit($fullScript, 60, '...');
-                                $canExpandScript = \Illuminate\Support\Str::length($fullScript) > 60;
-                            @endphp
-                            <span class="text-preview"
-                                  data-preview
-                                  data-preview-short="{{ base64_encode($shortScript) }}"
-                                  data-preview-full="{{ base64_encode($fullScript) }}">{{ $shortScript }}</span>
-                            @if($canExpandScript)
-                                <br>
-                                <button type="button" class="btn btn-ghost expand-btn" data-expand-toggle>Expand</button>
-                            @endif
+                        <td class="td-clamp td-clamp-wide">
+                            @include('scripts-monitor._clamped', ['content' => (string) $script->script])
                         </td>
-                        <td class="script-cell">{{ $script->caption ?: '—' }}</td>
-                        <td class="script-cell">
-                            @if(is_array($script->hashtags) && count($script->hashtags) > 0)
-                                {{ implode(' ', $script->hashtags) }}
+                        <td class="td-clamp">
+                            @include('scripts-monitor._clamped', ['content' => (string) ($script->caption ?? '')])
+                        </td>
+                        <td class="td-clamp">
+                            @php
+                                $tagsStr = (is_array($script->hashtags) && count($script->hashtags) > 0)
+                                    ? implode(' ', $script->hashtags)
+                                    : '';
+                            @endphp
+                            @include('scripts-monitor._clamped', ['content' => $tagsStr])
+                        </td>
+                        <td class="td-clamp">
+                            @include('scripts-monitor._clamped', ['content' => (string) ($script->video_id ?: '')])
+                        </td>
+                        <td class="td-clamp">
+                            @if($script->video_url)
+                                <a class="btn btn-ghost" href="{{ $script->video_url }}" target="_blank" rel="noopener noreferrer">Open video</a>
                             @else
                                 —
                             @endif
                         </td>
-                        <td>{{ $script->video_id ?: '-' }}</td>
-                        <td>
-                            @if($script->video_url)
-                                <a class="btn btn-ghost" href="{{ $script->video_url }}" target="_blank" rel="noopener noreferrer">Open video</a>
-                            @else
-                                -
-                            @endif
+                        <td class="td-clamp">
+                            @include('scripts-monitor._clamped', ['content' => (string) ($script->published_platform ?? '')])
                         </td>
-                        <td>{{ $script->published_platform ?: '-' }}</td>
                         <td>{{ $script->poll_attempts }}</td>
                         <td>{{ optional($script->last_polled_at)->toDateTimeString() ?: '-' }}</td>
                         <td>{{ optional($script->start_date)->toDateTimeString() ?: '-' }}</td>
                         <td>{{ optional($script->finish_date)->toDateTimeString() ?: '-' }}</td>
-                        <td class="error-cell">
-                            @php
-                                $fullError = (string) ($script->error ?: '-');
-                                $shortError = \Illuminate\Support\Str::limit($fullError, 60, '...');
-                                $canExpandError = \Illuminate\Support\Str::length($fullError) > 60;
-                            @endphp
-                            <span class="text-preview"
-                                  data-preview
-                                  data-preview-short="{{ base64_encode($shortError) }}"
-                                  data-preview-full="{{ base64_encode($fullError) }}">{{ $shortError }}</span>
-                            @if($canExpandError)
-                                <br>
-                                <button type="button" class="btn btn-ghost expand-btn" data-expand-toggle>Expand</button>
-                            @endif
+                        <td class="td-clamp td-clamp-wide error-cell">
+                            @include('scripts-monitor._clamped', ['content' => (string) ($script->error ?? '')])
                         </td>
                     </tr>
                 @empty
@@ -487,7 +490,9 @@
                         <span>Stage: {{ $log->stage }}</span>
                         <span class="log-level {{ $log->level === 'error' ? 'error' : '' }}">{{ $log->level }}</span>
                     </div>
-                    <div>{{ $log->message }}</div>
+                    <div class="log-message-wrap">
+                        @include('scripts-monitor._clamped', ['content' => (string) $log->message])
+                    </div>
                 </div>
             @empty
                 <div class="log-item">No updates yet.</div>
@@ -501,17 +506,40 @@
 </div>
 
 <script>
-    function utf8FromBase64(b64) {
-        try {
-            const binary = atob(b64);
-            const bytes = new Uint8Array(binary.length);
-            for (let i = 0; i < binary.length; i++) {
-                bytes[i] = binary.charCodeAt(i);
+    function initCellClamps() {
+        document.querySelectorAll('[data-cell-clamp]').forEach((clamp) => {
+            const inner = clamp.querySelector('.cell-clamp-inner');
+            const btn = clamp.querySelector('[data-cell-expand]');
+            if (!inner || !btn) {
+                return;
             }
-            return new TextDecoder('utf-8').decode(bytes);
-        } catch (e) {
-            return '';
-        }
+            const measure = () => {
+                const expanded = clamp.classList.contains('is-expanded');
+                if (expanded) {
+                    btn.hidden = false;
+                    return;
+                }
+                const needs = inner.scrollHeight > clamp.clientHeight + 2;
+                btn.hidden = !needs;
+            };
+            requestAnimationFrame(measure);
+        });
+
+        document.querySelectorAll('[data-cell-expand]').forEach((btn) => {
+            if (btn.dataset.cellExpandBound === '1') {
+                return;
+            }
+            btn.dataset.cellExpandBound = '1';
+            btn.addEventListener('click', () => {
+                const clamp = btn.closest('[data-cell-clamp]');
+                if (!clamp) {
+                    return;
+                }
+                const expanded = clamp.classList.toggle('is-expanded');
+                btn.textContent = expanded ? 'Collapse' : 'Expand';
+                btn.hidden = false;
+            });
+        });
     }
 
     const createForm = document.getElementById('create-form');
@@ -526,21 +554,7 @@
         createForm.classList.remove('show');
     });
 
-    document.querySelectorAll('[data-expand-toggle]').forEach((button) => {
-        button.addEventListener('click', () => {
-            const preview = button.closest('td')?.querySelector('[data-preview]');
-            if (!preview) {
-                return;
-            }
-
-            const short = utf8FromBase64(preview.dataset.previewShort);
-            const full = utf8FromBase64(preview.dataset.previewFull);
-            const isExpanded = button.dataset.expanded === 'true';
-            preview.textContent = isExpanded ? short : full;
-            button.dataset.expanded = isExpanded ? 'false' : 'true';
-            button.textContent = isExpanded ? 'Expand' : 'Collapse';
-        });
-    });
+    initCellClamps();
 </script>
 </body>
 </html>
