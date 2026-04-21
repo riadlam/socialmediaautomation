@@ -81,6 +81,7 @@ class RunScriptAutomationCommand extends Command
                         'aspect_ratio' => (string) ($payload['aspect_ratio'] ?? ''),
                         'resolution' => (string) ($payload['resolution'] ?? ''),
                         'caption' => $payload['caption'] ?? null,
+                        'api_engine' => $payload['api_engine'] ?? null,
                     ]);
                 } catch (Throwable $e) {
                     $this->markError($script, 'HeyGen generate exception: '.$e->getMessage());
@@ -418,6 +419,8 @@ class RunScriptAutomationCommand extends Command
             'title' => 'script-'.$script->id,
             'aspect_ratio' => $aspect,
             'resolution' => $resolution,
+            // Avatar IV (script-adaptive motion); avoids implicit Avatar V routing on some looks.
+            'api_engine' => 'avatar_4_quality',
         ];
 
         $background = $this->heyGenV2VideosBackgroundPayload();
