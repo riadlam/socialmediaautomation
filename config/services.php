@@ -38,13 +38,15 @@ return [
     'heygen' => [
         'api_key' => env('HEYGEN_API_KEY'),
         'avatar_id' => env('HEYGEN_AVATAR_ID'),
-        // Required with `script` for POST /v2/videos (Generate Video).
+        // Optional for Video Agent (`POST /v3/video-agents`); pin narration when set.
         'voice_id' => env('HEYGEN_VOICE_ID'),
         'max_poll_attempts' => env('HEYGEN_MAX_POLL_ATTEMPTS', 60),
         'target_seconds' => env('HEYGEN_TARGET_SECONDS', 20),
         'words_per_minute' => env('HEYGEN_WORDS_PER_MINUTE', 150),
-        // POST https://api.heygen.com/v2/videos — see HeyGen “Generate Video” API.
-        // When true, sends `caption: { file_format }` (CaptionSetting). HeyGen may return a burned-in URL as captioned_video_url / video_url_caption and/or subtitle_url (SRT).
+        // Video Agent: `POST /v3/video-agents` — style from GET /v3/video-agents/styles (optional).
+        'video_agent_style_id' => env('HEYGEN_VIDEO_AGENT_STYLE_ID'),
+        // Legacy aspect label: maps to Video Agent `orientation` (9:16 → portrait, 16:9 → landscape).
+        // When true, prefer `captioned_video_url` after render and add subtitle instructions to the agent prompt.
         'caption' => env('HEYGEN_CAPTION', true),
         'caption_file_format' => env('HEYGEN_CAPTION_FILE_FORMAT', 'srt'),
         'aspect_ratio' => env('HEYGEN_ASPECT_RATIO', '9:16'),

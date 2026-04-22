@@ -13,7 +13,7 @@ class RunScriptAutomationCommand extends Command
 {
     protected $signature = 'automation:run-scripts {--limit=5 : Maximum items per status per run}';
 
-    protected $description = 'Process scripts table: HeyGen Generate Video (POST /v2/videos), poll status (GET /v2/videos/{id}), then publish to Zrno.';
+    protected $description = 'Process scripts table: HeyGen Video Agent prompt-to-video (POST /v3/video-agents), poll session + GET /v3/videos/{id}, then publish to Zrno.';
 
     public function handle(): int
     {
@@ -38,50 +38,47 @@ class RunScriptAutomationCommand extends Command
             ->get()
             ->each(function (Script $script): void {
                 try {
-                    $this->writeLog($script, 'generate', 'info', 'Started HeyGen Generate Video (POST /v2/videos).');
-                    $payload = $this->buildHeyGenV2CreateVideoPayload($script);
+                    $this->writeLog($script, 'generate', 'info', 'Started HeyGen Video Agent (POST /v3/video-agents).');
+                    $payload = $this->buildHeyGenVideoAgentPayload($script);
 
-                    if ($payload === null) {
-                        $this->markError($script, 'HeyGen: HEYGEN_VOICE_ID is required for Generate Video when using a text script.');
-                        return;
-                    }
-
-                    $response = Http::timeout(60)
+                    $response = Http::timeout(120)
                         ->withHeaders([
                             'x-api-key' => (string) config('services.heygen.api_key'),
                             'Content-Type' => 'application/json',
+                            'Accept' => 'application/json',
                         ])
-                        ->post('https://api.heygen.com/v2/videos', $payload);
+                        ->post('https://api.heygen.com/v3/video-agents', $payload);
 
                     if (! $response->successful()) {
-                        $this->markError($script, 'HeyGen Generate Video HTTP '.$response->status().': '.$response->body());
+                        $this->markError($script, 'HeyGen Video Agent HTTP '.$response->status().': '.$response->body());
                         return;
                     }
 
-                    $videoId = $this->extractHeyGenV2CreateVideoId($response->json());
-
-                    if (! $videoId) {
-                        $this->markError($script, 'HeyGen Generate Video: missing video_id in response.');
+                    $createJson = $response->json();
+                    $sessionId = $this->extractHeyGenVideoAgentSessionId($createJson);
+                    if (! $sessionId) {
+                        $this->markError($script, 'HeyGen Video Agent: missing session_id in response.');
                         return;
                     }
+
+                    $videoId = $this->extractHeyGenVideoAgentVideoIdFromCreate($createJson);
 
                     $script->update([
                         'status' => 'generating',
                         'start_date' => $script->start_date ?? now(),
                         'finish_date' => null,
-                        'heygen_session_id' => null,
-                        'video_id' => (string) $videoId,
+                        'heygen_session_id' => (string) $sessionId,
+                        'video_id' => $videoId !== null && $videoId !== '' ? (string) $videoId : null,
                         'video_url' => null,
                         'poll_attempts' => 0,
                         'error' => null,
                     ]);
 
-                    $this->writeLog($script, 'generate', 'info', 'HeyGen Generate Video accepted.', [
-                        'video_id' => (string) $videoId,
-                        'aspect_ratio' => (string) ($payload['aspect_ratio'] ?? ''),
-                        'resolution' => (string) ($payload['resolution'] ?? ''),
-                        'caption' => $payload['caption'] ?? null,
-                        'api_engine' => $payload['api_engine'] ?? null,
+                    $this->writeLog($script, 'generate', 'info', 'HeyGen Video Agent session created.', [
+                        'session_id' => (string) $sessionId,
+                        'video_id' => $videoId,
+                        'orientation' => (string) ($payload['orientation'] ?? ''),
+                        'mode' => (string) ($payload['mode'] ?? ''),
                     ]);
                 } catch (Throwable $e) {
                     $this->markError($script, 'HeyGen generate exception: '.$e->getMessage());
@@ -107,8 +104,8 @@ class RunScriptAutomationCommand extends Command
             ->limit($limit)
             ->get()
             ->each(function (Script $script) use ($maxPollAttempts): void {
-                if (! $script->video_id) {
-                    $this->markError($script, 'Missing video_id while generating.');
+                if (! filled($script->heygen_session_id) && ! filled($script->video_id)) {
+                    $this->markError($script, 'Missing heygen_session_id and video_id while generating.');
                     return;
                 }
 
@@ -123,7 +120,58 @@ class RunScriptAutomationCommand extends Command
                         'last_polled_at' => now(),
                     ]);
 
-                    $pollUrl = 'https://api.heygen.com/v2/videos/'.rawurlencode((string) $script->video_id);
+                    $videoId = filled($script->video_id) ? (string) $script->video_id : null;
+
+                    if ($videoId === null && filled($script->heygen_session_id)) {
+                        $sessionUrl = 'https://api.heygen.com/v3/video-agents/'.rawurlencode((string) $script->heygen_session_id);
+                        $sessionResponse = Http::timeout(60)
+                            ->withHeaders([
+                                'x-api-key' => (string) config('services.heygen.api_key'),
+                                'Accept' => 'application/json',
+                            ])
+                            ->get($sessionUrl);
+
+                        if (! $sessionResponse->successful()) {
+                            $this->markError($script, 'HeyGen Video Agent session HTTP '.$sessionResponse->status().': '.$sessionResponse->body());
+                            return;
+                        }
+
+                        $sessionJson = $sessionResponse->json();
+                        if (is_array($sessionJson) && data_get($sessionJson, 'error.code')) {
+                            $this->markError($script, 'HeyGen session API error: '.(string) (data_get($sessionJson, 'error.message') ?: $sessionResponse->body()));
+                            return;
+                        }
+
+                        $sessionData = is_array($sessionJson) ? data_get($sessionJson, 'data') : null;
+                        $sessionData = is_array($sessionData) ? $sessionData : [];
+                        $sessionStatus = strtolower((string) data_get($sessionData, 'status', ''));
+
+                        if ($sessionStatus === 'failed') {
+                            $reason = $this->extractVideoAgentSessionFailureReason($sessionData)
+                                ?? 'HeyGen Video Agent session failed.';
+                            $this->markError($script, $reason);
+                            return;
+                        }
+
+                        $assignedId = data_get($sessionData, 'video_id');
+                        if (is_string($assignedId) && $assignedId !== '') {
+                            $script->update(['video_id' => $assignedId]);
+                            $videoId = $assignedId;
+                            $this->writeLog($script, 'poll', 'info', 'HeyGen Video Agent assigned video_id.', [
+                                'video_id' => $assignedId,
+                                'session_status' => $sessionStatus,
+                                'poll_attempts' => $script->fresh()->poll_attempts,
+                            ]);
+                        } else {
+                            $this->writeLog($script, 'poll', 'info', 'HeyGen Video Agent session polled.', [
+                                'session_status' => $sessionStatus,
+                                'poll_attempts' => $script->fresh()->poll_attempts,
+                            ]);
+                            return;
+                        }
+                    }
+
+                    $pollUrl = 'https://api.heygen.com/v3/videos/'.rawurlencode((string) $videoId);
                     $response = Http::timeout(60)
                         ->withHeaders([
                             'x-api-key' => (string) config('services.heygen.api_key'),
@@ -145,7 +193,7 @@ class RunScriptAutomationCommand extends Command
                     $state = $this->parseHeyGenV2VideoPollState($pollJson);
                     $status = $state['status'];
                     $this->writeLog($script, 'poll', 'info', 'HeyGen video status polled.', [
-                        'video_id' => $script->video_id,
+                        'video_id' => $videoId,
                         'poll_attempts' => $script->fresh()->poll_attempts,
                         'status' => $status,
                     ]);
@@ -387,67 +435,128 @@ class RunScriptAutomationCommand extends Command
     }
 
     /**
-     * POST /v2/videos — HeyGen “Generate Video” (avatar + script + voice).
+     * POST /v3/video-agents — HeyGen Video Agent (prompt-to-video, dashboard-style).
      *
-     * @return array<string, mixed>|null null when voice_id missing (required with script)
+     * @return array<string, mixed>
      */
-    private function buildHeyGenV2CreateVideoPayload(Script $script): ?array
+    private function buildHeyGenVideoAgentPayload(Script $script): array
     {
-        if (! filled(config('services.heygen.voice_id'))) {
-            return null;
+        $core = trim((string) $script->script);
+        $core = $this->buildHeyGenCreateVideoScriptText($core);
+        if ($core === '') {
+            $core = 'Brief engaging vertical social video.';
         }
 
-        $scriptText = $this->buildHeyGenCreateVideoScriptText(trim((string) $script->script));
-        if ($scriptText === '') {
-            $scriptText = '.';
-        }
-
-        $aspect = (string) config('services.heygen.aspect_ratio', '9:16');
-        if (! in_array($aspect, ['9:16', '16:9'], true)) {
-            $aspect = '9:16';
-        }
-
-        $resolution = (string) config('services.heygen.resolution', '1080p');
-        if (! in_array($resolution, ['1080p', '720p'], true)) {
-            $resolution = '1080p';
+        $prompt = $core.$this->heyGenVideoAgentPromptSuffix();
+        if (mb_strlen($prompt) > 10000) {
+            $prompt = mb_substr($prompt, 0, 10000);
         }
 
         $payload = [
-            'avatar_id' => (string) config('services.heygen.avatar_id'),
-            'script' => $scriptText,
-            'voice_id' => (string) config('services.heygen.voice_id'),
-            'title' => 'script-'.$script->id,
-            'aspect_ratio' => $aspect,
-            'resolution' => $resolution,
-            // Avatar IV (script-adaptive motion); avoids implicit Avatar V routing on some looks.
-            'api_engine' => 'avatar_4_quality',
+            'prompt' => $prompt,
+            'mode' => 'generate',
+            'orientation' => $this->heyGenVideoAgentOrientation(),
+            'incognito_mode' => false,
         ];
 
-        $background = $this->heyGenV2VideosBackgroundPayload();
-        if ($background !== null) {
-            $payload['background'] = $background;
+        if (filled(config('services.heygen.avatar_id'))) {
+            $payload['avatar_id'] = (string) config('services.heygen.avatar_id');
         }
 
-        if (filled(config('services.heygen.motion_prompt'))) {
-            $payload['motion_prompt'] = (string) config('services.heygen.motion_prompt');
+        if (filled(config('services.heygen.voice_id'))) {
+            $payload['voice_id'] = (string) config('services.heygen.voice_id');
         }
 
-        $expr = strtolower(trim((string) config('services.heygen.expressiveness', '')));
-        if (in_array($expr, ['low', 'medium', 'high'], true)) {
-            $payload['expressiveness'] = $expr;
-        }
-
-        if ((bool) config('services.heygen.caption', true)) {
-            $fileFormat = strtolower(trim((string) config('services.heygen.caption_file_format', 'srt')));
-            if ($fileFormat !== 'srt') {
-                $fileFormat = 'srt';
-            }
-            $payload['caption'] = [
-                'file_format' => $fileFormat,
-            ];
+        if (filled(config('services.heygen.video_agent_style_id'))) {
+            $payload['style_id'] = (string) config('services.heygen.video_agent_style_id');
         }
 
         return $payload;
+    }
+
+    private function heyGenVideoAgentOrientation(): string
+    {
+        $aspect = strtolower(trim((string) config('services.heygen.aspect_ratio', '9:16')));
+        if ($aspect === '16:9') {
+            return 'landscape';
+        }
+
+        return 'portrait';
+    }
+
+    private function heyGenVideoAgentPromptSuffix(): string
+    {
+        $parts = [
+            "\n\n---\nProduction brief (follow closely):",
+            'Target: vertical 9:16 short-form (TikTok / Instagram Reels / Shorts).',
+            'Use multiple scenes with tasteful cuts and transitions where they help the message (not one static talking-head shot unless the idea is extremely short).',
+            'Strong hook in the first seconds; clear pacing for mobile viewers.',
+        ];
+
+        if ((bool) config('services.heygen.caption', true)) {
+            $parts[] = 'Include burned-in, readable on-screen subtitles for all spoken words (high contrast, social-safe placement).';
+        }
+
+        return "\n".implode("\n", $parts);
+    }
+
+    /**
+     * @param array<string, mixed>|null $json
+     */
+    private function extractHeyGenVideoAgentSessionId(?array $json): ?string
+    {
+        if (! is_array($json)) {
+            return null;
+        }
+
+        $id = data_get($json, 'data.session_id') ?? data_get($json, 'session_id');
+
+        return is_string($id) && $id !== '' ? $id : null;
+    }
+
+    /**
+     * @param array<string, mixed>|null $json
+     */
+    private function extractHeyGenVideoAgentVideoIdFromCreate(?array $json): ?string
+    {
+        if (! is_array($json)) {
+            return null;
+        }
+
+        $id = data_get($json, 'data.video_id') ?? data_get($json, 'video_id');
+
+        return is_string($id) && $id !== '' ? $id : null;
+    }
+
+    /**
+     * @param array<string, mixed> $sessionData
+     */
+    private function extractVideoAgentSessionFailureReason(array $sessionData): ?string
+    {
+        $messages = data_get($sessionData, 'messages');
+        if (! is_array($messages)) {
+            return null;
+        }
+
+        $parts = [];
+        foreach ($messages as $message) {
+            if (! is_array($message)) {
+                continue;
+            }
+            if (strtolower((string) data_get($message, 'type')) !== 'error') {
+                continue;
+            }
+            $content = data_get($message, 'content');
+            if (is_string($content) && $content !== '') {
+                $parts[] = $content;
+            }
+        }
+
+        if ($parts !== []) {
+            return implode(' ', $parts);
+        }
+
+        return null;
     }
 
     private function buildHeyGenCreateVideoScriptText(string $raw): string
@@ -469,44 +578,7 @@ class RunScriptAutomationCommand extends Command
     }
 
     /**
-     * @return array{type: string, value: string}|null
-     */
-    private function heyGenV2VideosBackgroundPayload(): ?array
-    {
-        $color = trim((string) config('services.heygen.background_color', ''));
-        if ($color === '' || strtolower($color) === 'none') {
-            return null;
-        }
-
-        if (! str_starts_with($color, '#')) {
-            $color = '#'.$color;
-        }
-
-        return [
-            'type' => 'color',
-            'value' => $color,
-        ];
-    }
-
-    /**
-     * @param array<string, mixed>|null $json
-     */
-    private function extractHeyGenV2CreateVideoId(?array $json): ?string
-    {
-        if (! is_array($json)) {
-            return null;
-        }
-
-        $id = data_get($json, 'data.video_id')
-            ?? data_get($json, 'data.id')
-            ?? data_get($json, 'video_id')
-            ?? data_get($json, 'id');
-
-        return is_string($id) && $id !== '' ? $id : null;
-    }
-
-    /**
-     * Parses GET /v2/videos/{id} VideoDetail (`data`) or legacy GET /v1/video_status.get (`code` + `data`).
+     * Parses GET /v3/videos/{id} VideoDetail (`data`) or legacy GET /v1/video_status.get (`code` + `data`).
      *
      * @param array<string, mixed>|null $json
      *
