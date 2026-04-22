@@ -28,6 +28,7 @@ class RunScriptAutomationCommand extends Command
     {
         if ($this->hasActiveWorkInProgress()) {
             $this->info('Skipping pending queue: a script is still generating/publishing.');
+
             return;
         }
 
@@ -51,6 +52,7 @@ class RunScriptAutomationCommand extends Command
 
                     if (! $response->successful()) {
                         $this->markError($script, 'HeyGen Video Agent HTTP '.$response->status().': '.$response->body());
+
                         return;
                     }
 
@@ -58,6 +60,7 @@ class RunScriptAutomationCommand extends Command
                     $sessionId = $this->extractHeyGenVideoAgentSessionId($createJson);
                     if (! $sessionId) {
                         $this->markError($script, 'HeyGen Video Agent: missing session_id in response.');
+
                         return;
                     }
 
@@ -106,11 +109,13 @@ class RunScriptAutomationCommand extends Command
             ->each(function (Script $script) use ($maxPollAttempts): void {
                 if (! filled($script->heygen_session_id) && ! filled($script->video_id)) {
                     $this->markError($script, 'Missing heygen_session_id and video_id while generating.');
+
                     return;
                 }
 
                 if ($script->poll_attempts >= $maxPollAttempts) {
                     $this->markError($script, 'HeyGen polling timeout reached.');
+
                     return;
                 }
 
@@ -133,12 +138,14 @@ class RunScriptAutomationCommand extends Command
 
                         if (! $sessionResponse->successful()) {
                             $this->markError($script, 'HeyGen Video Agent session HTTP '.$sessionResponse->status().': '.$sessionResponse->body());
+
                             return;
                         }
 
                         $sessionJson = $sessionResponse->json();
                         if (is_array($sessionJson) && data_get($sessionJson, 'error.code')) {
                             $this->markError($script, 'HeyGen session API error: '.(string) (data_get($sessionJson, 'error.message') ?: $sessionResponse->body()));
+
                             return;
                         }
 
@@ -154,6 +161,7 @@ class RunScriptAutomationCommand extends Command
                                 'session_data' => $sessionData,
                             ]);
                             $this->markError($script, $reason);
+
                             return;
                         }
 
@@ -171,6 +179,7 @@ class RunScriptAutomationCommand extends Command
                                 'session_status' => $sessionStatus,
                                 'poll_attempts' => $script->fresh()->poll_attempts,
                             ]);
+
                             return;
                         }
                     }
@@ -185,12 +194,14 @@ class RunScriptAutomationCommand extends Command
 
                     if (! $response->successful()) {
                         $this->markError($script, 'HeyGen video status HTTP '.$response->status().': '.$response->body());
+
                         return;
                     }
 
                     $pollJson = $response->json();
                     if (is_array($pollJson) && data_get($pollJson, 'error.code')) {
                         $this->markError($script, 'HeyGen status API error: '.(string) (data_get($pollJson, 'error.message') ?: $response->body()));
+
                         return;
                     }
 
@@ -209,31 +220,39 @@ class RunScriptAutomationCommand extends Command
 
                         if (! $videoUrl) {
                             $this->markError($script, 'HeyGen completed but no usable video URL (video_url / captioned_video_url / video_url_caption).');
+
                             return;
                         }
+
+                        $thumbUrl = $this->scalarToNullableString($state['thumbnail_url'] ?? null);
 
                         $script->update([
                             'status' => 'publishing',
                             'video_url' => $videoUrl,
+                            'thumbnail_url' => $thumbUrl,
                             'error' => null,
                         ]);
                         $this->writeLog($script, 'poll', 'info', 'HeyGen video completed.', [
                             'video_url' => $videoUrl,
+                            'thumbnail_url' => $thumbUrl,
                             'used_caption_render' => $videoUrl === ($state['captioned_video_url'] ?? null)
                                 || $videoUrl === ($state['video_url_caption'] ?? null),
                         ]);
+
                         return;
                     }
 
                     if (in_array($statusLower, ['failed', 'error'], true)) {
-                        $failedReason = $this->resolveHeyGenRenderFailureMessage($state);
+                        $failedReason = $this->resolveHeyGenRenderFailureMessage($state, $pollJson);
                         $this->writeLog($script, 'poll', 'error', $failedReason, [
                             'video_id' => $videoId,
                             'parsed_status' => $status,
                             'failure_code' => $state['failure_code'] ?? null,
                             'raw_error' => $state['error'] ?? null,
+                            'raw_json_truncated' => $this->truncateJsonForLog($pollJson),
                         ]);
                         $this->markError($script, $failedReason);
+
                         return;
                     }
                 } catch (Throwable $e) {
@@ -254,6 +273,7 @@ class RunScriptAutomationCommand extends Command
             ->each(function (Script $script): void {
                 if (! $script->video_url) {
                     $this->markError($script, 'Missing video_url while publishing.');
+
                     return;
                 }
 
@@ -263,6 +283,7 @@ class RunScriptAutomationCommand extends Command
 
                     if ($platforms === []) {
                         $this->markError($script, 'Zrno platforms are not configured. Set ZRNO_PLATFORMS_JSON or ZRNO_PLATFORM + ZRNO_ACCOUNT_ID.');
+
                         return;
                     }
 
@@ -274,12 +295,18 @@ class RunScriptAutomationCommand extends Command
 
                     // Zerno `content`: caption (or script) + hashtags in the same string so Instagram shows them.
                     $caption = $this->buildPublishCaption($script);
+                    $videoItem = [
+                        'type' => 'video',
+                        'url' => $script->video_url,
+                    ];
+                    $thumb = $this->scalarToNullableString($script->thumbnail_url ?? null);
+                    if ($thumb !== null) {
+                        $videoItem['video_cover_image_url'] = $thumb;
+                    }
+
                     $postPayload = [
                         'content' => $caption,
-                        'mediaItems' => [[
-                            'type' => 'video',
-                            'url' => $script->video_url,
-                        ]],
+                        'mediaItems' => [$videoItem],
                         'platforms' => [$selectedPlatform],
                         'publishNow' => true,
                     ];
@@ -393,7 +420,7 @@ class RunScriptAutomationCommand extends Command
     }
 
     /**
-     * @param array{platform:string,accountId:string} $selectedPlatform
+     * @param  array{platform:string,accountId:string}  $selectedPlatform
      */
     private function markPublishSkippedDuplicate(Script $script, array $selectedPlatform, Response $response): void
     {
@@ -430,7 +457,7 @@ class RunScriptAutomationCommand extends Command
     }
 
     /**
-     * @param array<string, mixed>|null $context
+     * @param  array<string, mixed>|null  $context
      */
     private function writeLog(Script $script, string $stage, string $level, string $message, ?array $context = null): void
     {
@@ -444,19 +471,18 @@ class RunScriptAutomationCommand extends Command
     }
 
     /**
-     * POST /v3/video-agents — HeyGen Video Agent (prompt-to-video, dashboard-style).
+     * POST /v3/video-agents — same JSON shape as Postman: prompt, mode, orientation, incognito_mode, optional avatar_id / voice_id.
+     * `prompt` is only the trimmed/normalized form text (`scripts.script`); nothing is concatenated to it.
      *
      * @return array<string, mixed>
      */
     private function buildHeyGenVideoAgentPayload(Script $script): array
     {
-        $core = trim((string) $script->script);
-        $core = $this->buildHeyGenCreateVideoScriptText($core);
-        if ($core === '') {
-            $core = 'Brief engaging vertical social video.';
+        $prompt = $this->normalizeHeyGenVideoAgentPrompt((string) $script->script);
+        if ($prompt === '') {
+            $prompt = 'Brief engaging vertical social video.';
         }
 
-        $prompt = $core.$this->heyGenVideoAgentPromptSuffix();
         if (mb_strlen($prompt) > 10000) {
             $prompt = mb_substr($prompt, 0, 10000);
         }
@@ -479,6 +505,16 @@ class RunScriptAutomationCommand extends Command
         return $payload;
     }
 
+    /**
+     * Postman JSON bodies use `\n` in strings; normalize Windows/Mac line breaks so the string matches that style.
+     */
+    private function normalizeHeyGenVideoAgentPrompt(string $raw): string
+    {
+        $s = str_replace(["\r\n", "\r"], "\n", $raw);
+
+        return trim($s);
+    }
+
     private function heyGenVideoAgentOrientation(): string
     {
         $aspect = strtolower(trim((string) config('services.heygen.aspect_ratio', '9:16')));
@@ -489,24 +525,8 @@ class RunScriptAutomationCommand extends Command
         return 'portrait';
     }
 
-    private function heyGenVideoAgentPromptSuffix(): string
-    {
-        $parts = [
-            "\n\n---\nProduction brief (follow closely):",
-            'Target: vertical 9:16 short-form (TikTok / Instagram Reels / Shorts).',
-            'Use multiple scenes with tasteful cuts and transitions where they help the message (not one static talking-head shot unless the idea is extremely short).',
-            'Strong hook in the first seconds; clear pacing for mobile viewers.',
-        ];
-
-        if ((bool) config('services.heygen.caption', true)) {
-            $parts[] = 'Include burned-in, readable on-screen subtitles for all spoken words (high contrast, social-safe placement).';
-        }
-
-        return "\n".implode("\n", $parts);
-    }
-
     /**
-     * @param array<string, mixed>|null $json
+     * @param  array<string, mixed>|null  $json
      */
     private function extractHeyGenVideoAgentSessionId(?array $json): ?string
     {
@@ -520,7 +540,7 @@ class RunScriptAutomationCommand extends Command
     }
 
     /**
-     * @param array<string, mixed>|null $json
+     * @param  array<string, mixed>|null  $json
      */
     private function extractHeyGenVideoAgentVideoIdFromCreate(?array $json): ?string
     {
@@ -534,7 +554,7 @@ class RunScriptAutomationCommand extends Command
     }
 
     /**
-     * @param array<string, mixed> $sessionData
+     * @param  array<string, mixed>  $sessionData
      */
     private function extractVideoAgentSessionFailureReason(array $sessionData): ?string
     {
@@ -577,30 +597,11 @@ class RunScriptAutomationCommand extends Command
         return null;
     }
 
-    private function buildHeyGenCreateVideoScriptText(string $raw): string
-    {
-        if ($raw === '') {
-            return '';
-        }
-
-        if ((bool) config('services.heygen.multi_scene', true)) {
-            $parts = $this->splitScriptIntoScenes($raw);
-            if (count($parts) >= 2) {
-                $joined = implode("\n\n", $parts);
-
-                return $this->trimScriptToTargetDuration($joined);
-            }
-        }
-
-        return $this->trimScriptToTargetDuration($raw);
-    }
-
     /**
      * Parses GET /v3/videos/{id} VideoDetail (`data`) or legacy GET /v1/video_status.get (`code` + `data`).
      *
-     * @param array<string, mixed>|null $json
-     *
-     * @return array{status: ?string, video_url: ?string, captioned_video_url: ?string, video_url_caption: ?string, failure_code: ?string, error: mixed}
+     * @param  array<string, mixed>|null  $json
+     * @return array{status: ?string, video_url: ?string, captioned_video_url: ?string, video_url_caption: ?string, thumbnail_url: ?string, failure_code: ?string, error: mixed, video_page_url: ?string}
      */
     private function parseHeyGenV2VideoPollState(?array $json): array
     {
@@ -609,8 +610,10 @@ class RunScriptAutomationCommand extends Command
             'video_url' => null,
             'captioned_video_url' => null,
             'video_url_caption' => null,
+            'thumbnail_url' => null,
             'failure_code' => null,
             'error' => null,
+            'video_page_url' => null,
         ];
 
         if (! is_array($json)) {
@@ -618,14 +621,25 @@ class RunScriptAutomationCommand extends Command
         }
 
         $data = data_get($json, 'data');
+        if (is_object($data)) {
+            $decoded = json_decode(json_encode($data), true);
+            $data = is_array($decoded) ? $decoded : null;
+        }
         $block = is_array($data) ? $data : $json;
 
-        $failureMessage = data_get($block, 'failure_message');
-        $failureCodeRaw = data_get($block, 'failure_code');
+        $failureMessage = data_get($block, 'failure_message')
+            ?? data_get($block, 'failureMessage');
+        $failureCodeRaw = data_get($block, 'failure_code')
+            ?? data_get($block, 'failureCode');
         $failureCode = is_string($failureCodeRaw) && $failureCodeRaw !== ''
             ? $failureCodeRaw
             : (is_scalar($failureCodeRaw) && (string) $failureCodeRaw !== '' ? (string) $failureCodeRaw : null);
-        $legacyError = data_get($block, 'error') ?? data_get($block, 'message') ?? data_get($json, 'error');
+
+        $legacyError = data_get($block, 'error')
+            ?? data_get($block, 'errors')
+            ?? data_get($block, 'message')
+            ?? data_get($json, 'error')
+            ?? data_get($json, 'message');
 
         $errorOut = $legacyError;
         if (is_string($failureMessage) && $failureMessage !== '') {
@@ -634,26 +648,51 @@ class RunScriptAutomationCommand extends Command
             $errorOut = $failureCode;
         }
 
+        $statusRaw = data_get($block, 'status') ?? data_get($json, 'status');
+        $statusStr = $this->heyGenNormalizePollStatus($statusRaw);
+
         return [
-            'status' => $this->scalarToNullableString(data_get($block, 'status')),
+            'status' => $statusStr,
             'video_url' => $this->scalarToNullableString(
                 data_get($block, 'video_url')
+                    ?? data_get($block, 'videoUrl')
                     ?? data_get($block, 'url')
                     ?? data_get($block, 'video.video_url')
             ),
-            'captioned_video_url' => $this->scalarToNullableString(data_get($block, 'captioned_video_url')),
-            'video_url_caption' => $this->scalarToNullableString(data_get($block, 'video_url_caption')),
+            'captioned_video_url' => $this->scalarToNullableString(
+                data_get($block, 'captioned_video_url') ?? data_get($block, 'captionedVideoUrl')
+            ),
+            'video_url_caption' => $this->scalarToNullableString(
+                data_get($block, 'video_url_caption') ?? data_get($block, 'videoUrlCaption')
+            ),
+            'thumbnail_url' => $this->scalarToNullableString(
+                data_get($block, 'thumbnail_url') ?? data_get($block, 'thumbnailUrl')
+            ),
             'failure_code' => $failureCode,
             'error' => $errorOut,
+            'video_page_url' => $this->scalarToNullableString(
+                data_get($block, 'video_page_url') ?? data_get($block, 'videoPageUrl')
+            ),
         ];
     }
 
+    private function heyGenNormalizePollStatus(mixed $status): ?string
+    {
+        if (is_string($status) && $status !== '') {
+            return strtolower($status);
+        }
+        if (is_scalar($status) && (string) $status !== '') {
+            return strtolower((string) $status);
+        }
+
+        return null;
+    }
+
     /**
-     * Human-readable failure from GET /v3/videos/{id} (VideoDetail) or legacy shapes.
-     *
-     * @param array{status: ?string, video_url: ?string, captioned_video_url: ?string, video_url_caption: ?string, failure_code: ?string, error: mixed} $state
+     * @param  array<string, mixed>  $state
+     * @param  array<string, mixed>|null  $rawPollJson  Full GET /v3/videos/{id} JSON for debugging
      */
-    private function resolveHeyGenRenderFailureMessage(array $state): string
+    private function resolveHeyGenRenderFailureMessage(array $state, ?array $rawPollJson = null): string
     {
         $fromError = $this->formatHeyGenPollFailureReason($state['error'] ?? null);
         if ($fromError !== null && $fromError !== '') {
@@ -670,15 +709,44 @@ class RunScriptAutomationCommand extends Command
             return 'HeyGen video failed ('.$code.').';
         }
 
+        $page = $state['video_page_url'] ?? null;
+        $pageHint = is_string($page) && $page !== '' ? ' Open in HeyGen: '.$page : '';
+
+        $snippet = $this->truncateJsonForLog($rawPollJson ?? [], 1500);
+        if ($snippet !== '') {
+            return 'HeyGen video failed (see raw API payload).'.$pageHint.' Payload: '.$snippet;
+        }
+
         $st = $state['status'] ?? 'unknown';
 
-        return 'HeyGen video failed (status '.$st.', no failure_message or error object in API response).';
+        return 'HeyGen video failed (status '.$st.').'.$pageHint;
+    }
+
+    /**
+     * @param  array<string, mixed>|null  $payload
+     */
+    private function truncateJsonForLog(?array $payload, int $maxLen = 2000): string
+    {
+        if (! is_array($payload) || $payload === []) {
+            return '';
+        }
+
+        $encoded = json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
+        if (! is_string($encoded) || $encoded === '') {
+            return '';
+        }
+
+        if (mb_strlen($encoded) <= $maxLen) {
+            return $encoded;
+        }
+
+        return mb_substr($encoded, 0, $maxLen).'…';
     }
 
     /**
      * When captions are enabled, prefer HeyGen’s burned-in MP4 (captioned_video_url or legacy video_url_caption), else plain video_url.
      *
-     * @param array{status: ?string, video_url: ?string, captioned_video_url: ?string, video_url_caption: ?string, failure_code?: ?string, error?: mixed} $state
+     * @param  array{status: ?string, video_url: ?string, captioned_video_url: ?string, video_url_caption: ?string, thumbnail_url?: ?string, failure_code?: ?string, error?: mixed}  $state
      */
     private function resolveHeyGenCompletedVideoUrl(array $state): ?string
     {
@@ -734,97 +802,6 @@ class RunScriptAutomationCommand extends Command
         return null;
     }
 
-    private function maxWordsForVideoBudget(): int
-    {
-        $targetSeconds = (int) config('services.heygen.target_seconds', 20);
-        $wpm = (int) config('services.heygen.words_per_minute', 150);
-
-        return max(1, (int) floor(($targetSeconds / 60) * $wpm));
-    }
-
-    /**
-     * Splits advice / self-improvement style scripts into HeyGen scenes: paragraphs first, else one line per beat
-     * (fits short-form “wisdom” lines like your example).
-     *
-     * @return list<string>
-     */
-    private function splitScriptIntoScenes(string $script): array
-    {
-        $mode = strtolower(trim((string) config('services.heygen.scene_split', 'auto')));
-        $maxScenes = max(1, min(50, (int) config('services.heygen.max_scenes', 12)));
-        $normalized = trim((string) (preg_replace("/\r\n|\r/", "\n", $script) ?? $script));
-
-        if ($mode === 'single') {
-            return [$normalized];
-        }
-
-        if ($mode === 'paragraph') {
-            $parts = preg_split('/\n\s*\n+/', $normalized, -1, PREG_SPLIT_NO_EMPTY);
-            $parts = array_values(array_filter(array_map('trim', is_array($parts) ? $parts : [])));
-
-            return $this->capSceneCount($parts !== [] ? $parts : [$normalized], $maxScenes);
-        }
-
-        if ($mode === 'line') {
-            $lines = preg_split('/\n+/', $normalized, -1, PREG_SPLIT_NO_EMPTY);
-            $lines = array_values(array_filter(array_map('trim', is_array($lines) ? $lines : [])));
-
-            return $this->capSceneCount($lines !== [] ? $lines : [$normalized], $maxScenes);
-        }
-
-        // auto: paragraphs if 2+, else lines if 2+, else single scene
-        $paragraphs = preg_split('/\n\s*\n+/', $normalized, -1, PREG_SPLIT_NO_EMPTY);
-        $paragraphs = array_values(array_filter(array_map('trim', is_array($paragraphs) ? $paragraphs : [])));
-        if (count($paragraphs) >= 2) {
-            return $this->capSceneCount($paragraphs, $maxScenes);
-        }
-
-        $lines = preg_split('/\n+/', $normalized, -1, PREG_SPLIT_NO_EMPTY);
-        $lines = array_values(array_filter(array_map('trim', is_array($lines) ? $lines : [])));
-        if (count($lines) >= 2) {
-            return $this->capSceneCount($lines, $maxScenes);
-        }
-
-        return [$normalized];
-    }
-
-    /**
-     * @param list<string> $scenes
-     * @return list<string>
-     */
-    private function capSceneCount(array $scenes, int $maxScenes): array
-    {
-        if (count($scenes) <= $maxScenes) {
-            return $scenes;
-        }
-
-        $head = array_slice($scenes, 0, $maxScenes - 1);
-        $tail = array_slice($scenes, $maxScenes - 1);
-        $merged = trim(implode(' ', $tail));
-        if ($merged !== '') {
-            $head[] = $merged;
-        }
-
-        return $head;
-    }
-
-    private function trimTextToWordLimit(string $script, int $maxWords): string
-    {
-        $clean = trim(preg_replace('/\s+/', ' ', $script) ?? $script);
-        $words = preg_split('/\s+/', $clean, -1, PREG_SPLIT_NO_EMPTY);
-
-        if (! is_array($words) || count($words) <= $maxWords) {
-            return $clean;
-        }
-
-        return implode(' ', array_slice($words, 0, $maxWords));
-    }
-
-    private function trimScriptToTargetDuration(string $script): string
-    {
-        return $this->trimTextToWordLimit($script, $this->maxWordsForVideoBudget());
-    }
-
     /**
      * @return array<int, array{platform:string,accountId:string}>
      */
@@ -874,7 +851,7 @@ class RunScriptAutomationCommand extends Command
     }
 
     /**
-     * @param array<int, array{platform:string,accountId:string}> $platforms
+     * @param  array<int, array{platform:string,accountId:string}>  $platforms
      * @return array{platform:string,accountId:string}
      */
     private function resolveNextPublishPlatform(array $platforms): array
@@ -894,10 +871,10 @@ class RunScriptAutomationCommand extends Command
             }
 
             $nextIndex = ($index + 1) % count($platforms);
+
             return $platforms[$nextIndex];
         }
 
         return $platforms[0];
     }
 }
-

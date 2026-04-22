@@ -1,0 +1,34 @@
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+return new class extends Migration
+{
+    public function up(): void
+    {
+        if (! Schema::hasTable('scripts')) {
+            return;
+        }
+
+        if (! Schema::hasColumn('scripts', 'thumbnail_url')) {
+            Schema::table('scripts', function (Blueprint $table): void {
+                $table->text('thumbnail_url')->nullable()->after('video_url');
+            });
+        }
+    }
+
+    public function down(): void
+    {
+        if (! Schema::hasTable('scripts')) {
+            return;
+        }
+
+        if (Schema::hasColumn('scripts', 'thumbnail_url')) {
+            Schema::table('scripts', function (Blueprint $table): void {
+                $table->dropColumn('thumbnail_url');
+            });
+        }
+    }
+};

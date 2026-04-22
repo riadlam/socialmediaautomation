@@ -41,10 +41,8 @@ return [
         // Optional for Video Agent (`POST /v3/video-agents`); pin narration when set.
         'voice_id' => env('HEYGEN_VOICE_ID'),
         'max_poll_attempts' => env('HEYGEN_MAX_POLL_ATTEMPTS', 60),
-        'target_seconds' => env('HEYGEN_TARGET_SECONDS', 20),
-        'words_per_minute' => env('HEYGEN_WORDS_PER_MINUTE', 150),
         // Legacy aspect label: maps to Video Agent `orientation` (9:16 → portrait, 16:9 → landscape).
-        // When true, prefer `captioned_video_url` after render and add subtitle instructions to the agent prompt.
+        // When true, prefer `captioned_video_url` after GET /v3/videos/{id} (does not change the request `prompt`).
         'caption' => env('HEYGEN_CAPTION', true),
         'caption_file_format' => env('HEYGEN_CAPTION_FILE_FORMAT', 'srt'),
         'aspect_ratio' => env('HEYGEN_ASPECT_RATIO', '9:16'),
@@ -54,10 +52,6 @@ return [
         'expressiveness' => env('HEYGEN_EXPRESSIVENESS'),
         // Solid background: type color + hex. Set HEYGEN_BACKGROUND_COLOR=none to omit.
         'background_color' => env('HEYGEN_BACKGROUND_COLOR', '#0a0a0a'),
-        // Join multi-line advice scripts into one `script` (paragraph breaks between beats).
-        'multi_scene' => env('HEYGEN_MULTI_SCENE', true),
-        'max_scenes' => env('HEYGEN_MAX_SCENES', 12),
-        'scene_split' => env('HEYGEN_SCENE_SPLIT', 'auto'),
     ],
 
     'zrno' => [

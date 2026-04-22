@@ -353,9 +353,9 @@
     <div class="create-form panel @if($errors->any() || filled(old('script')) || filled(old('caption'))) show @endif" id="create-form">
         <form method="POST" action="{{ route('scripts.monitor.store') }}">
             @csrf
-            <label for="script">Video script (HeyGen)</label>
-            <textarea id="script" name="script" required placeholder="Text used to generate the avatar video…">{{ old('script') }}</textarea>
-            <div class="field-hint">This is sent to HeyGen as voice/input. It is not the social post caption.</div>
+            <label for="script">HeyGen Video Agent prompt</label>
+            <textarea id="script" name="script" required rows="14" placeholder="Paste the full `prompt` you would send in Postman (niche, style, rules, voiceover lines — everything in one field).">{{ old('script') }}</textarea>
+            <div class="field-hint">Stored as <code>scripts.script</code> and sent as HeyGen <code>prompt</code> only (line breaks normalized to <code>\n</code> like a Postman JSON string). Request body uses the same keys as Postman: <code>prompt</code>, <code>mode</code>, <code>orientation</code>, <code>incognito_mode</code>, plus <code>avatar_id</code> / <code>voice_id</code> from env when set. Not the Zerno caption.</div>
 
             <div class="field-group">
                 <label for="caption">Post caption (Zerno)</label>
