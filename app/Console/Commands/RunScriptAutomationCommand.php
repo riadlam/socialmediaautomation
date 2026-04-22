@@ -148,7 +148,11 @@ class RunScriptAutomationCommand extends Command
 
                         if ($sessionStatus === 'failed') {
                             $reason = $this->extractVideoAgentSessionFailureReason($sessionData)
-                                ?? 'HeyGen Video Agent session failed.';
+                                ?? 'HeyGen Video Agent session failed (no error messages in session payload).';
+                            $this->writeLog($script, 'poll', 'error', $reason, [
+                                'session_status' => $sessionStatus,
+                                'session_data' => $sessionData,
+                            ]);
                             $this->markError($script, $reason);
                             return;
                         }
@@ -222,9 +226,14 @@ class RunScriptAutomationCommand extends Command
                     }
 
                     if (in_array($statusLower, ['failed', 'error'], true)) {
-                        $failedReason = $this->formatHeyGenPollFailureReason($state['error'])
-                            ?? 'HeyGen render failed.';
-                        $this->markError($script, (string) $failedReason);
+                        $failedReason = $this->resolveHeyGenRenderFailureMessage($state);
+                        $this->writeLog($script, 'poll', 'error', $failedReason, [
+                            'video_id' => $videoId,
+                            'parsed_status' => $status,
+                            'failure_code' => $state['failure_code'] ?? null,
+                            'raw_error' => $state['error'] ?? null,
+                        ]);
+                        $this->markError($script, $failedReason);
                         return;
                     }
                 } catch (Throwable $e) {
@@ -467,10 +476,6 @@ class RunScriptAutomationCommand extends Command
             $payload['voice_id'] = (string) config('services.heygen.voice_id');
         }
 
-        if (filled(config('services.heygen.video_agent_style_id'))) {
-            $payload['style_id'] = (string) config('services.heygen.video_agent_style_id');
-        }
-
         return $payload;
     }
 
@@ -556,6 +561,19 @@ class RunScriptAutomationCommand extends Command
             return implode(' ', $parts);
         }
 
+        foreach ($messages as $message) {
+            if (! is_array($message)) {
+                continue;
+            }
+            if (strtolower((string) data_get($message, 'role')) !== 'model') {
+                continue;
+            }
+            $content = data_get($message, 'content');
+            if (is_string($content) && trim($content) !== '') {
+                return trim($content);
+            }
+        }
+
         return null;
     }
 
@@ -582,19 +600,39 @@ class RunScriptAutomationCommand extends Command
      *
      * @param array<string, mixed>|null $json
      *
-     * @return array{status: ?string, video_url: ?string, captioned_video_url: ?string, video_url_caption: ?string, error: mixed}
+     * @return array{status: ?string, video_url: ?string, captioned_video_url: ?string, video_url_caption: ?string, failure_code: ?string, error: mixed}
      */
     private function parseHeyGenV2VideoPollState(?array $json): array
     {
+        $empty = [
+            'status' => null,
+            'video_url' => null,
+            'captioned_video_url' => null,
+            'video_url_caption' => null,
+            'failure_code' => null,
+            'error' => null,
+        ];
+
         if (! is_array($json)) {
-            return ['status' => null, 'video_url' => null, 'captioned_video_url' => null, 'video_url_caption' => null, 'error' => null];
+            return $empty;
         }
 
         $data = data_get($json, 'data');
         $block = is_array($data) ? $data : $json;
 
         $failureMessage = data_get($block, 'failure_message');
+        $failureCodeRaw = data_get($block, 'failure_code');
+        $failureCode = is_string($failureCodeRaw) && $failureCodeRaw !== ''
+            ? $failureCodeRaw
+            : (is_scalar($failureCodeRaw) && (string) $failureCodeRaw !== '' ? (string) $failureCodeRaw : null);
         $legacyError = data_get($block, 'error') ?? data_get($block, 'message') ?? data_get($json, 'error');
+
+        $errorOut = $legacyError;
+        if (is_string($failureMessage) && $failureMessage !== '') {
+            $errorOut = $failureMessage;
+        } elseif (($errorOut === null || $errorOut === '' || $errorOut === []) && $failureCode !== null) {
+            $errorOut = $failureCode;
+        }
 
         return [
             'status' => $this->scalarToNullableString(data_get($block, 'status')),
@@ -605,14 +643,42 @@ class RunScriptAutomationCommand extends Command
             ),
             'captioned_video_url' => $this->scalarToNullableString(data_get($block, 'captioned_video_url')),
             'video_url_caption' => $this->scalarToNullableString(data_get($block, 'video_url_caption')),
-            'error' => $failureMessage !== null && $failureMessage !== '' ? $failureMessage : $legacyError,
+            'failure_code' => $failureCode,
+            'error' => $errorOut,
         ];
+    }
+
+    /**
+     * Human-readable failure from GET /v3/videos/{id} (VideoDetail) or legacy shapes.
+     *
+     * @param array{status: ?string, video_url: ?string, captioned_video_url: ?string, video_url_caption: ?string, failure_code: ?string, error: mixed} $state
+     */
+    private function resolveHeyGenRenderFailureMessage(array $state): string
+    {
+        $fromError = $this->formatHeyGenPollFailureReason($state['error'] ?? null);
+        if ($fromError !== null && $fromError !== '') {
+            $code = $state['failure_code'] ?? null;
+            if (is_string($code) && $code !== '' && ! str_contains($fromError, $code)) {
+                return $code.': '.$fromError;
+            }
+
+            return $fromError;
+        }
+
+        $code = $state['failure_code'] ?? null;
+        if (is_string($code) && $code !== '') {
+            return 'HeyGen video failed ('.$code.').';
+        }
+
+        $st = $state['status'] ?? 'unknown';
+
+        return 'HeyGen video failed (status '.$st.', no failure_message or error object in API response).';
     }
 
     /**
      * When captions are enabled, prefer HeyGen’s burned-in MP4 (captioned_video_url or legacy video_url_caption), else plain video_url.
      *
-     * @param array{status: ?string, video_url: ?string, captioned_video_url: ?string, video_url_caption: ?string, error: mixed} $state
+     * @param array{status: ?string, video_url: ?string, captioned_video_url: ?string, video_url_caption: ?string, failure_code?: ?string, error?: mixed} $state
      */
     private function resolveHeyGenCompletedVideoUrl(array $state): ?string
     {
@@ -649,12 +715,20 @@ class RunScriptAutomationCommand extends Command
         }
 
         if (is_array($error)) {
-            $msg = data_get($error, 'message') ?? data_get($error, 'detail');
+            $msg = data_get($error, 'message')
+                ?? data_get($error, 'detail')
+                ?? data_get($error, 'msg');
             if (is_string($msg) && $msg !== '') {
                 return $msg;
             }
 
-            return json_encode($error, JSON_UNESCAPED_UNICODE) ?: 'HeyGen render failed.';
+            $encoded = json_encode($error, JSON_UNESCAPED_UNICODE);
+
+            return ($encoded !== false && $encoded !== '') ? $encoded : null;
+        }
+
+        if (is_scalar($error) && (string) $error !== '') {
+            return (string) $error;
         }
 
         return null;

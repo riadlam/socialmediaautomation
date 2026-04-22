@@ -43,8 +43,6 @@ return [
         'max_poll_attempts' => env('HEYGEN_MAX_POLL_ATTEMPTS', 60),
         'target_seconds' => env('HEYGEN_TARGET_SECONDS', 20),
         'words_per_minute' => env('HEYGEN_WORDS_PER_MINUTE', 150),
-        // Video Agent: `POST /v3/video-agents` — style from GET /v3/video-agents/styles (optional).
-        'video_agent_style_id' => env('HEYGEN_VIDEO_AGENT_STYLE_ID'),
         // Legacy aspect label: maps to Video Agent `orientation` (9:16 → portrait, 16:9 → landscape).
         // When true, prefer `captioned_video_url` after render and add subtitle instructions to the agent prompt.
         'caption' => env('HEYGEN_CAPTION', true),
